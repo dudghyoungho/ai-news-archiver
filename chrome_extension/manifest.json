@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Link Archiver & AI Summary",
+  "version": "1.0",
+  "description": "현재 보고 있는 네이버 뉴스를 AI 요약 서버로 전송합니다.",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["http://localhost:8000/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

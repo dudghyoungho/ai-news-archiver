@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        width: 300px;
+        padding: 15px;
+        font-family: sans-serif;
+      }
+      h3 {
+        margin-top: 0;
+        color: #333;
+      }
+      input {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        box-sizing: border-box;
+      }
+      button {
+        width: 100%;
+        padding: 10px;
+        background-color: #2563eb;
+        color: white;
+        border: none;
+        cursor: pointer;
+        border-radius: 4px;
+        font-weight: bold;
+      }
+      button:hover {
+        background-color: #1d4ed8;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #666;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>AI 뉴스 요약 저장</h3>
+
+    <div id="login-section">
+      <input type="text" id="username" placeholder="아이디" />
+      <input type="password" id="password" placeholder="비밀번호" />
+      <button id="btn-login">로그인</button>
+    </div>
+
+    <div id="save-section" class="hidden">
+      <p
+        id="current-url"
+        style="word-break: break-all; font-size: 11px; color: #888"
+      ></p>
+      <button id="btn-save">현재 페이지 저장 및 요약</button>
+      <button id="btn-logout" style="background-color: #999; margin-top: 5px">
+        로그아웃
+      </button>
+    </div>
+
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

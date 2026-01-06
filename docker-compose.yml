@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  # 1. Django Web Server
+  web:
+    build: . # 현재 폴더의 Dockerfile을 기반으로 이미지 빌드
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app # [핵심] 내 컴퓨터의 코드를 컨테이너와 실시간 동기화 (코드 수정 시 바로 반영)
+    ports:
+      - "8000:8000" # 내 컴퓨터 8000포트 -> 컨테이너 8000포트 연결
+    depends_on:
+      - db
+      - redis
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST=db # [중요] 서비스 이름 'db'가 호스트 주소가 됨
+      - POSTGRES_PORT=5432
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+  # 2. PostgreSQL Database
+  db:
+    image: pgvector/pgvector:pg15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # DB 데이터를 컴퓨터에 영구 저장 (컨테이너 꺼져도 안 날아감)
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+
+  # 3. Redis (Message Broker & Cache)
+  redis:
+    image: redis:alpine
+
+  # 4. Celery Worker (Background Task)
+  # 웹 서버와 똑같은 환경(코드)을 갖지만, 하는 일(Command)만 다름
+  worker:
+    build: .
+    command: celery -A config worker --loglevel=info # 'config' 부분은 나중에 Django 프로젝트 이름으로 변경 필요
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+      - redis
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      # Celery가 Redis를 바라보도록 설정
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+volumes:
+  postgres_data: # DB 데이터 저장소 정의

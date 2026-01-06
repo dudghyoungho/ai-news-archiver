@@ -1,0 +1,62 @@
+<div
+  id="link-list"
+  class="space-y-4"
+  hx-get="/"
+  hx-select="#link-list"
+  {%
+  if
+  has_pending
+  %}
+  hx-trigger="every 2s"
+  {%
+  endif
+  %}
+  hx-swap="outerHTML"
+>
+  {% for link in links %}
+  <div
+    class="bg-white p-6 rounded-lg shadow border-l-4 {% if link.status == 'COMPLETED' %}border-green-500 {% elif link.status == 'FAILED' %}border-red-500 {% else %}border-yellow-500{% endif %} transition duration-500 ease-in-out"
+  >
+    <div class="flex justify-between items-start mb-2">
+      <span
+        class="text-xs font-bold px-2 py-1 rounded {% if link.status == 'COMPLETED' %}bg-green-100 text-green-800 {% elif link.status == 'FAILED' %}bg-red-100 text-red-800 {% else %}bg-yellow-100 text-yellow-800{% endif %}"
+      >
+        {{ link.status }}
+      </span>
+      <span class="text-xs text-gray-400"
+        >{{ link.created_at|date:"Y-m-d H:i" }}</span
+      >
+    </div>
+
+    <h3 class="text-xl font-bold mb-2">
+      <a
+        href="{{ link.url }}"
+        target="_blank"
+        class="hover:text-blue-600 hover:underline"
+      >
+        {{ link.title|default:link.url }}
+      </a>
+    </h3>
+
+    {% if link.summary %}
+    <div
+      class="bg-gray-50 p-4 rounded text-gray-700 text-sm mb-3 whitespace-pre-line animate-fade-in"
+    >
+      {{ link.summary }}
+    </div>
+    {% endif %} {% if link.tags %}
+    <div class="flex flex-wrap gap-2">
+      {% for tag in link.tags %}
+      <span class="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full"
+        >#{{ tag }}</span
+      >
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% empty %}
+  <div class="text-center text-gray-500 py-10">
+    아직 저장된 뉴스가 없습니다.
+  </div>
+  {% endfor %}
+</div>

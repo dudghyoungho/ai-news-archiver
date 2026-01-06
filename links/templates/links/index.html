@@ -1,0 +1,93 @@
+{% extends 'links/base.html' %} {% block content %}
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+  <div class="md:col-span-2 bg-white p-6 rounded-lg shadow-md h-full">
+    <h2 class="text-xl font-bold mb-4 text-gray-800">새로운 뉴스 추가</h2>
+    <form
+      hx-post="{% url 'htmx_link_create' %}"
+      hx-trigger="submit"
+      hx-target="#link-list"
+      hx-swap="outerHTML"
+      id="link-form"
+      class="flex gap-2"
+    >
+      {% csrf_token %}
+      <input
+        type="url"
+        name="url"
+        placeholder="네이버 뉴스 URL을 입력하세요..."
+        required
+        class="flex-1 p-3 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
+      />
+      <button
+        type="submit"
+        class="bg-blue-600 text-white px-6 py-3 rounded hover:bg-blue-700 font-bold transition"
+      >
+        추가
+      </button>
+    </form>
+    <p class="text-sm text-gray-500 mt-2">
+      * URL을 입력하면 AI가 자동으로 요약하고 분류합니다. (약 5~10초 소요)
+    </p>
+  </div>
+
+  <div
+    class="bg-white p-6 rounded-lg shadow-md flex flex-col items-center justify-center"
+  >
+    <h2 class="text-lg font-bold mb-2 text-gray-700">나의 관심사 TOP 5</h2>
+    <div class="w-full h-48 relative">
+      <canvas id="tagChart"></canvas>
+    </div>
+  </div>
+</div>
+
+{% include 'links/partials/link_list.html' %}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // 폼 제출 후 input 비우기 및 알림
+  document.body.addEventListener('htmx:afterRequest', function(evt) {
+      // 폼 제출 성공 시에만 동작
+      if(evt.detail.elt.id === 'link-form' && evt.detail.successful) {
+          document.querySelector('input[name="url"]').value = '';
+          // alert는 사용자 경험을 끊을 수 있으므로 제거하거나 필요시 유지
+          // alert('요청되었습니다!');
+      }
+  });
+
+  // 차트 그리기
+  const ctx = document.getElementById('tagChart').getContext('2d');
+  const labels = {{ chart_labels|safe }};
+  const data = {{ chart_data|safe }};
+
+  if (labels.length > 0) {
+      new Chart(ctx, {
+          type: 'doughnut',
+          data: {
+              labels: labels,
+              datasets: [{
+                  data: data,
+                  backgroundColor: [
+                      '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'
+                  ],
+                  borderWidth: 0
+              }]
+          },
+          options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                  legend: {
+                      position: 'bottom',
+                      labels: { boxWidth: 10, font: { size: 10 } }
+                  }
+              }
+          }
+      });
+  } else {
+      ctx.font = "14px Arial";
+      ctx.fillText("데이터가 충분하지 않습니다", 50, 80);
+  }
+</script>
+
+{% endblock %}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI News Archiver</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  </head>
+  <body class="bg-gray-100 min-h-screen">
+    <div class="max-w-4xl mx-auto py-10 px-4">
+      <div class="mb-8 text-center">
+        <h1 class="text-4xl font-bold text-blue-600 mb-2">
+          Smart Link Archiver
+        </h1>
+        <p class="text-gray-600">AI가 요약해주는 나만의 뉴스 저장소</p>
+      </div>
+
+      {% block content %} {% endblock %}
+    </div>
+  </body>
+</html>
