@@ -6,7 +6,7 @@ from django.utils import timezone
 from .models import Link
 from .crawler import get_naver_news_info
 import logging
-from .ai import generate_summary_and_tags, get_embedding
+from .ai import generate_summary_and_tags, get_embedding, update_user_interest_profile
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,12 @@ def crawl_and_save_link(self, link_id: int):
         # IntegrityError 대비: 먼저 저장 시도
         try:
             with transaction.atomic():
-                link.save()
+                link.save()        
+            try: # 저장이 확실히 성공한 직후에 사용자 프로필 업데이트 실행
+                update_user_interest_profile(user_id)
+            except Exception as e:
+                logger.error(f"Failed to update user profile for user {user_id}: {e}")
+
             return f"Link {link_id} processed: {link.status}"
 
         except IntegrityError as e:

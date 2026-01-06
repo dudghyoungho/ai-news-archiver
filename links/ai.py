@@ -3,6 +3,10 @@ import json
 import logging
 from openai import OpenAI
 
+import numpy as np
+from django.utils import timezone
+from .models import Link, UserProfile
+
 logger = logging.getLogger(__name__)
 
 # 환경 변수에서 키를 가져옴 (없으면 None)
@@ -81,3 +85,60 @@ def get_embedding(text):
     except Exception as e:
         logger.error(f"Embedding Error: {e}")
         return None
+    
+
+def update_user_interest_profile(user_id):
+    """
+    사용자가 읽은 최근 기사들의 벡터를 시간 가중치(Time-Decay)를 적용하여 평균을 냅니다.
+    이 '가중 평균 벡터'가 곧 사용자의 현재 관심사(User Profile)가 됩니다.
+    """
+    try:
+        # 1. 최근 읽은(저장한) 기사 50개만 가져오기 (너무 오래된 건 무시)
+        recent_links = Link.objects.filter(
+            user_id=user_id,
+            embedding__isnull=False
+        ).order_by('-created_at')[:50]
+
+        if not recent_links:
+            return
+
+        # 2. 데이터 준비
+        embeddings = []
+        weights = []
+        now = timezone.now()
+
+        for link in recent_links:
+            # 벡터를 numpy 배열로 변환
+            vec = np.array(link.embedding, dtype=np.float32)
+            
+            # 3. 시간 감쇠(Time-Decay) 가중치 계산
+            # 공식: 1 / (1 + 0.1 * 경과일수) -> 하루 지날 때마다 비중이 줄어듦
+            days_diff = (now - link.created_at).days
+            # 시간 차이가 0일보다 작게 나오는 경우(방금 생성) 0으로 보정
+            days_diff = max(0, days_diff)
+            
+            weight = 1.0 / (1.0 + 0.1 * days_diff)
+
+            embeddings.append(vec)
+            weights.append(weight)
+
+        # 4. 가중 평균(Weighted Average) 계산
+        # (v1*w1 + v2*w2 + ...) / (w1 + w2 + ...)
+        if embeddings:
+            embeddings_matrix = np.array(embeddings)
+            weights_array = np.array(weights).reshape(-1, 1) # 방송(Broadcasting)을 위해 차원 맞춤
+
+            weighted_sum = np.sum(embeddings_matrix * weights_array, axis=0)
+            total_weight = np.sum(weights_array)
+            
+            final_interest_vector = (weighted_sum / total_weight).tolist()
+
+            # 5. DB 업데이트
+            profile, created = UserProfile.objects.get_or_create(user_id=user_id)
+            profile.interest_vector = final_interest_vector
+            profile.save()
+            
+            print(f"[User Profiling] Updated profile for user {user_id} based on {len(recent_links)} links.")
+
+    except Exception as e:
+        print(f"[User Profiling] Error updating profile: {e}")
