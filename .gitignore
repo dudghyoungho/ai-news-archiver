@@ -1,22 +1,40 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.so
+*.egg-info/
+dist/
+build/
 
-# Django
+# --- Django ---
 *.log
 local_settings.py
 db.sqlite3
 media/
 staticfiles/
 
-# Env
+# --- Environment ---
 .env
+.env.*
 .venv/
 venv/
+ENV/
+.envrc
 
-# VSCode
-.vscode/
+# --- OS / IDE ---
 .DS_Store
+.vscode/
+.idea/
+
+# --- Celery / runtime ---
+celerybeat-schedule
+*.pid
+
+# --- Jupyter / misc ---
+.ipynb_checkpoints/
+
+# --- Docker (optional local volumes) ---
+# docker-compose에서 로컬 볼륨을 폴더로 뽑아쓸 때만 추가
+# postgres_data/
