@@ -1,12 +1,17 @@
-# links/tasks.py
-
 from celery import shared_task
 from django.db import transaction, IntegrityError
 from django.utils import timezone
-from .models import Link
-from .crawler import get_naver_news_info
+import numpy as np
+from datetime import timedelta
+from dateutil import parser as date_parser  # 날짜 파싱용 (pip install python-dateutil 필요, 보통 django에 내장됨)
+from django.contrib.auth.models import User
+
+from .models import Link, UserProfile
+from .crawler import get_naver_news_info, search_naver_news
 import logging
-from .ai import generate_summary_and_tags, get_embedding, update_user_interest_profile
+from .ai import generate_summary_and_tags, get_embedding, update_user_interest_profile, get_recommendation_keywords
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -253,3 +258,150 @@ def retry_failed_links():
         count += 1
         
     return f"Retried {count} failed links."
+
+
+@shared_task
+def recommend_articles_daily():
+    """
+    모든 사용자에 대해 일일 추천 시스템을 가동합니다.
+    (Celery Beat에 의해 매일 아침 실행되도록 설정 예정)
+    """
+    for user in User.objects.all():
+        recommend_articles_for_user.delay(user.id)
+    return "Started recommendation tasks for all users."
+
+@shared_task
+def recommend_articles_for_user(user_id):
+    """
+    특정 사용자를 위한 하이브리드 추천 로직 (Hybrid Scoring)
+    """
+    try:
+        user = User.objects.get(id=user_id)
+        # 1. 사용자 프로필(Interest Vector) 가져오기
+        try:
+            profile = user.profile
+            if profile.interest_vector is None:
+                logger.info(f"User {user_id} has no interest vector. Skipping recommendation.")
+                return "No interest vector"
+            user_vector = np.array(profile.interest_vector, dtype=np.float32)
+        except UserProfile.DoesNotExist:
+            logger.info(f"User {user_id} has no profile. Skipping.")
+            return "No user profile"
+
+        # 2. 최근 읽은 기사 요약본 모으기 (검색어 추론용)
+        recent_links = Link.objects.filter(
+            user=user, 
+            status='COMPLETED'
+        ).order_by('-created_at')[:10]
+        
+        if not recent_links:
+            return "Not enough history to recommend"
+
+        summary_text = "\n".join([f"- {l.title}: {l.summary}" for l in recent_links])
+
+        # 3. GPT에게 검색 키워드 추천받기
+        keywords = get_recommendation_keywords(summary_text) # ['AI', '반도체', '투자']
+        logger.info(f"[Recommend] Keywords for user {user_id}: {keywords}")
+
+        if not keywords:
+            return "Failed to generate keywords"
+
+        # 4. 네이버 뉴스 검색 (후보군 확보)
+        candidates = []
+        seen_urls = set()
+        
+        # 이미 DB에 있는 URL은 제외 (중복 추천 방지)
+        existing_urls = set(Link.objects.filter(user=user).values_list('url', flat=True))
+
+        for kw in keywords:
+            items = search_naver_news(kw, display=20) # 키워드당 20개
+            for item in items:
+                url = item.get('originallink') or item.get('link')
+                if url in seen_urls or url in existing_urls:
+                    continue
+                
+                seen_urls.add(url)
+                candidates.append({
+                    'item': item,
+                    'keyword': kw
+                })
+
+        logger.info(f"[Recommend] Found {len(candidates)} candidates.")
+        if not candidates:
+            return "No candidates found"
+
+        # 5. 점수 계산 (Scoring)
+        scored_candidates = []
+        
+        for cand in candidates:
+            item = cand['item']
+            title = item['title']
+            description = item['description']
+            
+            # 5-1. 임시 벡터 생성 (제목+설명)
+            text_for_embedding = f"{title}\n{description}"
+            # 비용 절감을 위해 너무 긴 후보군은 생략하거나, 실제 운영시엔 캐싱 필요
+            # 여기서는 후보군 전체에 대해 임베딩을 수행합니다. (API 호출량 주의)
+            vec = get_embedding(text_for_embedding)
+            
+            if vec is None:
+                continue
+            
+            cand_vec = np.array(vec, dtype=np.float32)
+
+            # 5-2. 유사도 점수 (Cosine Similarity)
+            # 코사인 유사도 = (A . B) / (|A| * |B|)
+            norm_u = np.linalg.norm(user_vector)
+            norm_c = np.linalg.norm(cand_vec)
+            
+            if norm_u == 0 or norm_c == 0:
+                similarity = 0
+            else:
+                similarity = np.dot(user_vector, cand_vec) / (norm_u * norm_c)
+
+            # 5-3. 최신성 점수 (Recency)
+            # 오늘 날짜와 차이가 적을수록 높은 점수 (0 ~ 1.0)
+            try:
+                pub_date = date_parser.parse(item['pubDate'])
+                days_diff = (timezone.now() - pub_date).days
+                # 3일 이내면 1.0, 그 외엔 감점
+                recency_score = 1.0 if days_diff <= 3 else max(0, 1.0 - (days_diff * 0.1))
+            except:
+                recency_score = 0.5
+
+            # 5-4. 키워드 매칭 보너스
+            # 추천된 키워드가 제목에 정확히 포함되면 가산점
+            keyword_score = 1.0 if cand['keyword'] in title else 0.0
+
+            # ★ 최종 스코어 공식 ★
+            # Score = (유사도 * 0.7) + (최신성 * 0.2) + (키워드 * 0.1)
+            final_score = (similarity * 0.7) + (recency_score * 0.2) + (keyword_score * 0.1)
+            
+            scored_candidates.append((final_score, item, cand['keyword']))
+
+        # 6. 랭킹 & 상위 5개 선정
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        top_5 = scored_candidates[:5]
+
+        # 7. DB 저장
+        saved_count = 0
+        with transaction.atomic():
+            for score, item, kw in top_5:
+                # Link 객체 생성 (status='RECOMMENDED')
+                Link.objects.create(
+                    user=user,
+                    url=item.get('originallink') or item.get('link'),
+                    title=item['title'],
+                    # 아직 본문 크롤링은 안 된 상태이므로 요약/본문은 비워둠
+                    publisher="Naver Search", 
+                    status='RECOMMENDED',
+                    failed_reason=f"Score: {score:.4f}, Keyword: {kw}" # 점수를 기록해두면 디버깅에 좋음
+                )
+                saved_count += 1
+        
+        logger.info(f"[Recommend] Successfully saved {saved_count} recommended articles for user {user_id}.")
+        return f"Saved {saved_count} recommendations"
+
+    except Exception as e:
+        logger.error(f"[Recommend] Error: {e}")
+        return f"Error: {e}"

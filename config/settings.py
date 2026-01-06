@@ -157,3 +157,6 @@ CSRF_TRUSTED_ORIGINS = [
     # ▼ 에러 메시지에 뜬 ID를 포함한 주소 (마지막에 슬래시 / 없음)
     'chrome-extension://kcimckmkkbnlleakaibncopaalgndomn',
 ]
+
+NAVER_CLIENT_ID = "aa_lAR67DjAvyhjfsVg1"
+NAVER_CLIENT_SECRET = "cjCsNRYj6n"

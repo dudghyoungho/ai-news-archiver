@@ -9,6 +9,7 @@ class Link(models.Model):
         ('COMPLETED', '완료'),
         ('FAILED', '실패'),
         ('PARTIAL', '일부완료'),
+        ('RECOMMENDED', 'AI추천'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE)

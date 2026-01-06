@@ -1,5 +1,7 @@
-# crawler.py
+import urllib.request
+import json
 import logging
+from django.conf import settings
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +15,8 @@ from bs4 import BeautifulSoup
 
 from django.utils import timezone
 
+NAVER_CLIENT_ID = getattr(settings, 'NAVER_CLIENT_ID', 'YOUR_CLIENT_ID_HERE')
+NAVER_CLIENT_SECRET = getattr(settings, 'NAVER_CLIENT_SECRET', 'YOUR_CLIENT_SECRET_HERE')
 
 logger = logging.getLogger(__name__)
 
@@ -433,3 +437,43 @@ def get_naver_news_info(url: str) -> Dict[str, Any]:
     if not result["failed_reason"]:
         result["failed_reason"] = "SOFT_UNKNOWN"
     return result
+
+
+
+def search_naver_news(keyword, display=20):
+    """
+    네이버 뉴스 검색 API를 사용하여 관련 기사 목록을 가져옵니다.
+    """
+    encText = urllib.parse.quote(keyword)
+    url = f"https://openapi.naver.com/v1/search/news?query={encText}&display={display}&sort=sim"
+
+    try:
+        request = urllib.request.Request(url)
+        request.add_header("X-Naver-Client-Id", NAVER_CLIENT_ID)
+        request.add_header("X-Naver-Client-Secret", NAVER_CLIENT_SECRET)
+        
+        response = urllib.request.urlopen(request)
+        res_code = response.getcode()
+
+        if res_code == 200:
+            response_body = response.read()
+            data = json.loads(response_body.decode('utf-8'))
+            
+            # 우리가 필요한 형태로 데이터 정제
+            results = []
+            for item in data.get('items', []):
+                results.append({
+                    "title": item['title'].replace('<b>', '').replace('</b>', ''), # 강조 태그 제거
+                    "originallink": item['originallink'], # 원본 URL
+                    "link": item['link'], # 네이버 뉴스 URL (있으면 우선 사용)
+                    "description": item['description'].replace('<b>', '').replace('</b>', ''),
+                    "pubDate": item['pubDate']
+                })
+            return results
+        else:
+            logging.error(f"[search_naver_news] Error Code: {res_code}")
+            return []
+
+    except Exception as e:
+        logging.error(f"[search_naver_news] Exception: {e}")
+        return []

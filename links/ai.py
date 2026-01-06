@@ -142,3 +142,39 @@ def update_user_interest_profile(user_id):
 
     except Exception as e:
         print(f"[User Profiling] Error updating profile: {e}")
+        
+
+def get_recommendation_keywords(user_summary_text):
+    """
+    사용자의 최근 관심사(요약 텍스트 모음)를 바탕으로
+    네이버 뉴스 검색에 사용할 키워드 3개를 추출합니다.
+    """
+    if not client:
+        return ["IT", "테크", "AI"] # 기본값
+
+    try:
+        system_prompt = (
+            "You are a helpful assistant for a news recommendation system. "
+            "Based on the user's reading history summary, suggest 3 specific Korean search keywords "
+            "to find related new articles on Naver News. "
+            "Output must be a JSON object with a single key 'keywords' which is a list of strings."
+        )
+        
+        user_prompt = f"User's recent reading history summaries:\n{user_summary_text}"
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        raw_json = response.choices[0].message.content
+        data = json.loads(raw_json)
+        return data.get("keywords", [])[:3]
+
+    except Exception as e:
+        logger.error(f"[get_recommendation_keywords] Error: {e}")
+        return ["기술", "경제", "사회"] # 에러 시 기본값
