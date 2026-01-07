@@ -32,4 +32,8 @@ urlpatterns = [
     # [추가] 추천 기사 변환 및 리다이렉트 URL
     path('recommendation/<int:pk>/convert/', views.convert_recommendation, name='convert_recommendation'),
 
+    # 통계 페이지: localhost:8000/stats
+    path('stats/', views.stats_page, name='stats_page'),       # 껍데기 페이지
+    path('stats/content/', views.stats_content, name='stats_content'), # 데이터 로딩용 (HTMX)
+
 ]

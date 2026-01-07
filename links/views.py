@@ -1,5 +1,5 @@
 # links/views.py
-
+import json
 from django.shortcuts import get_object_or_404, render, redirect
 from django.db import transaction
 from django.utils import timezone
@@ -16,11 +16,19 @@ from django.utils.decorators import method_decorator
 from rest_framework.authentication import BasicAuthentication
 
 
+from collections import Counter
+from django.shortcuts import render
+from django.db.models import Count
+from django.db.models.functions import TruncDate
+from pgvector.django import CosineDistance # 임포트 확인
+from .ai import analyze_user_interest # 임포트 추가
+
 from .models import Link
 from .tasks import crawl_and_save_link
 from .serializers import LinkSerializer
+from .utils import determine_persona, CATEGORY_KEYWORDS
 
-from collections import Counter
+
 
 @method_decorator(csrf_exempt, name='dispatch')
 class LinkCreateView(APIView):
@@ -275,3 +283,103 @@ def convert_recommendation(request, pk):
     
     # 사용자에게는 원래 가려던 뉴스 페이지를 보여줌
     return redirect(link.url)
+
+
+
+def stats_page(request):
+    """통계 페이지 껍데기"""
+    return render(request, 'links/stats.html')
+
+def stats_content(request):
+    """HTMX로 로딩되는 실제 통계 데이터"""
+    user = request.user
+    
+    # 1. 읽은 기사 가져오기
+    completed_links = Link.objects.filter(user=user, status='COMPLETED')
+
+    # 데이터가 없으면 빈 화면 표시
+    if not completed_links.exists():
+        return render(request, 'links/partials/stats_empty.html')
+
+    # =========================================================
+    # [Logic 1] AI 지식 브리핑 (GPT) - 데이터가 있을 때만
+    # =========================================================
+    ai_insight = None
+    if hasattr(user, 'profile') and user.profile.interest_vector is not None:
+        # 내 취향과 가장 가까운 기사 5개 찾기
+        closest_links = Link.objects.filter(
+            user=user,
+            status='COMPLETED',
+            embedding__isnull=False
+        ).annotate(
+            distance=CosineDistance('embedding', user.profile.interest_vector)
+        ).order_by('distance')[:5]
+        
+        representative_texts = [link.title for link in closest_links]
+        
+        # GPT 분석 호출 (시간이 좀 걸릴 수 있음)
+        if representative_texts:
+            ai_insight = analyze_user_interest(representative_texts)
+
+    # =========================================================
+    # [Logic 2] 페르소나 분석 (utils.py 활용)
+    # =========================================================
+    persona = determine_persona(completed_links)
+
+    # =========================================================
+    # [Logic 3] 차트 데이터 계산 (이 부분이 누락되어 에러가 났을 것임)
+    # =========================================================
+    
+    # 3-1. 태그 데이터 준비 (Bar Chart)
+    all_tags = []
+    for link in completed_links:
+        if link.tags:
+            all_tags.extend(link.tags)
+            
+    tag_counts = Counter(all_tags).most_common(10)
+    tag_labels = [tag for tag, count in tag_counts]
+    tag_data = [count for tag, count in tag_counts]
+
+    # 3-2. 카테고리 데이터 준비 (Radar Chart)
+    # utils.py의 CATEGORY_KEYWORDS를 재활용하여 일관성 유지
+    cat_scores = {k: 0 for k in CATEGORY_KEYWORDS.keys()}
+    
+    for tag in all_tags:
+        for cat, keywords in CATEGORY_KEYWORDS.items():
+            if any(k in tag for k in keywords):
+                cat_scores[cat] += 1
+                break
+    
+    cat_labels = list(cat_scores.keys())
+    cat_data = list(cat_scores.values())
+
+    # 3-3. 일별 추이 데이터 준비 (Line Chart)
+    daily_stats = (
+        completed_links
+        .annotate(date=TruncDate('created_at'))
+        .values('date')
+        .annotate(count=Count('id'))
+        .order_by('date')
+    )
+    # 날짜 포맷팅 (MM-DD)
+    trend_labels = [item['date'].strftime('%m-%d') for item in daily_stats][-14:] # 최근 2주만
+    trend_data = [item['count'] for item in daily_stats][-14:]
+
+    # =========================================================
+    # [Final] 컨텍스트 조립
+    # =========================================================
+    context = {
+        'persona': persona,
+        'ai_insight': ai_insight,
+        'total_count': completed_links.count(),
+        
+        # JSON 직렬화 (Template에서 safe 필터 사용)
+        'tag_labels': json.dumps(tag_labels),
+        'tag_data': json.dumps(tag_data),
+        'cat_labels': json.dumps(cat_labels),
+        'cat_data': json.dumps(cat_data),
+        'trend_labels': json.dumps(trend_labels),
+        'trend_data': json.dumps(trend_data),
+    }
+    
+    return render(request, 'links/partials/stats_content.html', context)

@@ -1,21 +1,31 @@
 # links/tasks.py
 
 import html
-import difflib # [필수] 텍스트 유사도 비교용
+import difflib # 텍스트 유사도 비교용
+import logging
 import numpy as np
 from datetime import timedelta
-from dateutil import parser as date_parser
+from collections import Counter # [필수] 태그 통계용
+
 from celery import shared_task
 from django.contrib.auth.models import User
-from django.db import transaction, IntegrityError # IntegrityError 추가
+from django.db import transaction, IntegrityError
 from django.utils import timezone
-import logging
-from collections import Counter 
-from pgvector.django import CosineDistance
+from dateutil import parser as date_parser
 
+# [필수] 벡터 거리 계산 및 모델 임포트
+from pgvector.django import CosineDistance
 from .models import Link, UserProfile
+
+# [필수] 크롤러 및 AI 모듈 임포트
 from .crawler import get_naver_news_info, search_naver_news
-from .ai import generate_summary_and_tags, get_embedding, get_embeddings_batch, update_user_interest_profile, get_recommendation_keywords
+from .ai import (
+    generate_summary_and_tags, 
+    get_embedding, 
+    get_embeddings_batch, 
+    update_user_interest_profile, 
+    get_recommendation_keywords
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +35,13 @@ RETRYABLE_REASON_PREFIXES = (
 )
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
+
+# =========================================================
+# 1. 크롤링 및 저장 태스크
+# =========================================================
 @shared_task(bind=True, max_retries=3)
 def crawl_and_save_link(self, link_id: int):
-    # (기존 crawl_and_save_link 코드와 동일합니다. 위에서 잘 작성하셨으므로 생략하지 않고 그대로 둡니다.)
+    # 1) 중복 실행 방지 및 상태 가드
     with transaction.atomic():
         try:
             link = Link.objects.select_for_update().get(id=link_id)
@@ -44,9 +58,10 @@ def crawl_and_save_link(self, link_id: int):
         url_to_crawl = link.url
         user_id = link.user_id
 
+    # 2) 크롤러 실행 (crawler.py의 로직을 따름)
     data = get_naver_news_info(url_to_crawl)
 
-    # 재시도 로직
+    # 3) 네트워크성 오류 재시도 처리
     try:
         http_status = data.get("http_status")
         reason = (data.get("failed_reason") or "").strip()
@@ -69,29 +84,38 @@ def crawl_and_save_link(self, link_id: int):
     except Exception:
         raise
 
-    # DB 반영
+    # 4) DB 반영 및 AI 후처리
     with transaction.atomic():
         link = Link.objects.select_for_update().get(id=link_id)
         crawler_status = data.get("status")
 
+        # --- 실패 (포토뉴스 포함) ---
         if crawler_status == "FAILED":
             link.status = "FAILED"
             link.failed_reason = data.get("failed_reason", "CRAWLER_FAILED")
             link.save()
-            return f"Link {link_id} FAILED"
+            return f"Link {link_id} FAILED: {link.failed_reason}"
 
-        link.status = "COMPLETED" if crawler_status == "SUCCESS" else "PARTIAL"
+        # --- 성공 데이터 반영 ---
         link.title = data.get("title", "") or link.title
         link.content = data.get("content", "") or link.content
         link.publisher = data.get("publisher", "") or link.publisher
         link.image_url = data.get("image_url")
         link.published_at = data.get("published_at")
+        link.naver_oid = data.get("naver_oid")
+        link.naver_aid = data.get("naver_aid")
         
         if data.get("normalized_url"):
             link.url = data.get("normalized_url")
 
-        # AI 요약 및 임베딩
-        if link.content:
+        # 상태 결정: SUCCESS면 바로 COMPLETED (crawler.py에서 길이 체크 함)
+        if crawler_status == "SUCCESS":
+            link.status = "COMPLETED"
+        else:
+            link.status = "PARTIAL"
+
+        # --- AI 요약 및 임베딩 (COMPLETED일 때만) ---
+        if link.status == "COMPLETED" and link.content:
             try:
                 ai_result = generate_summary_and_tags(link.title, link.content)
                 if ai_result:
@@ -110,33 +134,24 @@ def crawl_and_save_link(self, link_id: int):
 
         try:
             link.save()
-            # 프로필 업데이트 트리거
-            try:
-                update_user_interest_profile(user_id)
-            except Exception:
-                pass
-            return f"Link {link_id} SUCCESS"
+            # 프로필 업데이트 (내가 읽은 글이 추가됐으니 취향 업데이트)
+            if link.status == "COMPLETED":
+                try:
+                    update_user_interest_profile(user_id)
+                except Exception:
+                    pass
+            return f"Link {link_id} processed: {link.status}"
 
         except IntegrityError:
-            # 중복 처리 로직 (간소화)
             link.status = "FAILED"
-            link.failed_reason = "DUPLICATE"
+            link.failed_reason = "DUPLICATE_ENTRY"
             link.save()
             return "Duplicate link"
 
-@shared_task
-def retry_failed_links():
-    # (기존 코드 유지)
-    pass
 
-@shared_task
-def recommend_articles_daily():
-    for user in User.objects.all():
-        recommend_articles_for_user.delay(user.id)
-    return "Started tasks"
-
-
-
+# =========================================================
+# 2. 추천 시스템 (Two-Track + Hourly Recency + Dedup)
+# =========================================================
 @shared_task
 def recommend_articles_for_user(user_id):
     try:
@@ -152,11 +167,9 @@ def recommend_articles_for_user(user_id):
         except UserProfile.DoesNotExist:
             return "No user profile"
 
-        # ================================================================
-        # [수정] 2. Two-Track 데이터 수집 (장기/단기 분리)
-        # ================================================================
+        # 2. Two-Track 데이터 수집 (장기/단기 분리)
         
-        # A. 단기 기억 (Short-term): 최근 24시간 내 읽은 기사 (최대 5개)
+        # A. 단기 기억 (Short-term)
         one_day_ago = timezone.now() - timedelta(days=1)
         short_term_links = Link.objects.filter(
             user=user, 
@@ -166,14 +179,12 @@ def recommend_articles_for_user(user_id):
         
         short_term_text = "\n".join([f"- {l.title}" for l in short_term_links])
 
-        # B. 장기 기억 (Long-term): 태그 통계 + 벡터 기반 대표 기사
+        # B. 장기 기억 (Long-term)
         one_month_ago = timezone.now() - timedelta(days=30)
         
         # B-1. 태그 통계
         long_term_qs = Link.objects.filter(
-            user=user,
-            status='COMPLETED',
-            created_at__gte=one_month_ago
+            user=user, status='COMPLETED', created_at__gte=one_month_ago
         )
         all_tags = []
         for tags in long_term_qs.values_list('tags', flat=True):
@@ -181,7 +192,7 @@ def recommend_articles_for_user(user_id):
         
         top_tags = [tag for tag, count in Counter(all_tags).most_common(5)]
 
-        # B-2. 벡터 기반 대표 기사 (Core Interest)
+        # B-2. 벡터 기반 대표 기사
         core_interest_articles = []
         if user.profile.interest_vector is not None:
             core_links = Link.objects.filter(
@@ -199,14 +210,11 @@ def recommend_articles_for_user(user_id):
             f"Representative Articles: {', '.join(core_interest_articles)}"
         )
 
-        # 읽은 기록이 아예 없으면 중단
         if not short_term_text and not long_term_text:
             return "Not enough history"
 
-        # 3. 키워드 추천 (ai.py 호출 - 인자 2개 전달)
-        # 주의: ai.py의 get_recommendation_keywords 함수도 인자 2개를 받도록 수정되어야 합니다!
+        # 3. 키워드 추천
         keywords = get_recommendation_keywords(short_term_text, long_term_text)
-        
         if not keywords: return "Failed keywords"
         logger.info(f"[Recommend] Keywords: {keywords}")
 
@@ -216,13 +224,14 @@ def recommend_articles_for_user(user_id):
         existing_urls = set(Link.objects.filter(user=user).values_list('url', flat=True))
 
         for kw in keywords:
+            # display=100으로 늘려 아웃링크 필터링 대비
             items = search_naver_news(kw, display=100)
-            if not items:
-                logger.warning(f"[Recommend] Naver Search returned 0 items for keyword: {kw}")
             
             for item in items:
-                url = item.get('link', '')
-                if 'naver.com' not in url: continue # 네이버 뉴스만
+                url = item.get('originallink') or item.get('link')
+                # 네이버 뉴스만 허용
+                if 'naver.com' not in url: continue
+                
                 if url in seen_urls or url in existing_urls: continue
                 
                 seen_urls.add(url)
@@ -237,13 +246,11 @@ def recommend_articles_for_user(user_id):
 
         if not raw_candidates: return "No candidates"
 
-        # ================================================================
-        # [최적화 1] 텍스트 중복 제거
-        # ================================================================
+        # 5. 중복 제거 (Dedup)
         unique_candidates = []
         TITLE_SIMILARITY_THRESHOLD = 0.6 
         
-        # A. 후보군끼리 중복 제거
+        # A. 후보군끼리
         for cand in raw_candidates:
             is_duplicate = False
             for unique in unique_candidates:
@@ -254,7 +261,7 @@ def recommend_articles_for_user(user_id):
             if not is_duplicate:
                 unique_candidates.append(cand)
 
-        # B. DB 기사와 중복 제거
+        # B. DB 기사와
         recent_titles = list(Link.objects.filter(
             user=user,
             created_at__gte=timezone.now() - timedelta(days=3)
@@ -275,13 +282,10 @@ def recommend_articles_for_user(user_id):
                 final_candidates_to_embed.append(cand)
                 texts_to_embed.append(f"{cand['clean_title']}\n{cand['item']['description']}")
 
-        # ================================================================
-        # [최적화 2] 배치 임베딩
-        # ================================================================
+        # 6. 배치 임베딩 및 점수 계산
         vectors = get_embeddings_batch(texts_to_embed) if texts_to_embed else []
-
-        # 5. 점수 계산
         scored_candidates = []
+        
         for i, cand in enumerate(final_candidates_to_embed):
             vec = vectors[i]
             if vec is None: continue
@@ -291,23 +295,20 @@ def recommend_articles_for_user(user_id):
             norm_c = np.linalg.norm(cand_vec)
             similarity = np.dot(user_vector, cand_vec) / (norm_u * norm_c) if (norm_u > 0 and norm_c > 0) else 0
 
-            # 5-2. [수정] 시간(Hour) 단위 초정밀 최신성 점수
+            # [시간 단위 최신성]
             try:
                 pub_date = date_parser.parse(cand['item']['pubDate'])
-                # Timezone 처리 (Naive vs Aware)
                 if pub_date.tzinfo is None:
                     now = timezone.now().replace(tzinfo=None)
                 else:
                     now = timezone.now()
                 
-                # 시간 차이 계산
-                time_diff = now - pub_date
-                hours_diff = max(0, time_diff.total_seconds()) / 3600
-
-                if hours_diff < 1: recency_score = 1.0      # 1시간 이내 (속보)
-                elif hours_diff < 6: recency_score = 0.9    # 반나절 이내
-                elif hours_diff < 12: recency_score = 0.8   # 당일 뉴스
-                elif hours_diff < 24: recency_score = 0.6   # 하루 전
+                hours_diff = max(0, (now - pub_date).total_seconds()) / 3600
+                
+                if hours_diff < 1: recency_score = 1.0
+                elif hours_diff < 6: recency_score = 0.9
+                elif hours_diff < 12: recency_score = 0.8
+                elif hours_diff < 24: recency_score = 0.6
                 else: 
                     days = hours_diff / 24
                     recency_score = max(0, 0.5 - (days * 0.15))
@@ -316,11 +317,10 @@ def recommend_articles_for_user(user_id):
 
             keyword_score = 1.0 if cand['keyword'] in cand['clean_title'] else 0.0
             
-            # 가중치 (유사도7 : 최신성2 : 키워드1)
             final_score = (similarity * 0.7) + (recency_score * 0.2) + (keyword_score * 0.1)
             scored_candidates.append((final_score, cand))
 
-        # 6. 랭킹 & 쿼터제 (다양성 보장)
+        # 7. 랭킹 & 쿼터제
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
         
         final_top_5 = []
@@ -328,12 +328,10 @@ def recommend_articles_for_user(user_id):
         
         for score, cand in scored_candidates:
             if len(final_top_5) >= 5: break
-            
             kw = cand['keyword']
             current_count = keyword_counts.get(kw, 0)
             
-            # 한 키워드당 최대 2개까지만 (다양성 강제)
-            if current_count >= 2: continue
+            if current_count >= 2: continue # 쿼터 제한
             
             final_top_5.append((score, cand))
             keyword_counts[kw] = current_count + 1
@@ -346,7 +344,7 @@ def recommend_articles_for_user(user_id):
                 if cand['url'] not in picked_urls:
                     final_top_5.append((score, cand))
 
-        # 7. 저장
+        # 8. 저장
         saved_count = 0
         with transaction.atomic():
             for score, cand in final_top_5:
@@ -369,3 +367,24 @@ def recommend_articles_for_user(user_id):
     except Exception as e:
         logger.error(f"[Recommend] Error: {e}")
         return f"Error: {e}"
+
+
+@shared_task
+def retry_failed_links():
+    """주기적 재시도 태스크"""
+    failed_links = Link.objects.filter(status='FAILED', retry_count__lt=3)
+    count = 0
+    for link in failed_links:
+        link.status = 'PENDING'
+        link.save()
+        crawl_and_save_link.delay(link.id)
+        count += 1
+    return f"Retried {count} failed links."
+
+
+@shared_task
+def recommend_articles_daily():
+    """모든 유저 대상 추천 실행"""
+    for user in User.objects.all():
+        recommend_articles_for_user.delay(user.id)
+    return "Started tasks"

@@ -226,3 +226,40 @@ def get_recommendation_keywords(short_term_text, long_term_context):
     except Exception as e:
         logger.error(f"[get_recommendation_keywords] Error: {e}")
         return ["기술", "경제", "사회"] # 에러 시 기본값
+    
+
+
+def analyze_user_interest(representative_articles):
+    """
+    대표 기사 목록을 받아 사용자의 관심사 패턴을 문장으로 분석합니다.
+    """
+    if not client or not representative_articles:
+        return "데이터가 부족하여 분석할 수 없습니다."
+
+    # 기사 제목과 요약을 합침
+    context_text = "\n".join([f"- {title}" for title in representative_articles])
+
+    try:
+        system_prompt = (
+            "You are a personal knowledge analyst. "
+            "Analyze the user's reading list and provide a specific, insightful description of their current intellectual interests in Korean. "
+            "Do not just list the topics. Explain 'Why' they might be interested or 'How' these topics connect. "
+            "Use a polite and professional tone (해요체). Keep it under 200 characters."
+        )
+        
+        user_prompt = f"User's Core Reading List:\n{context_text}"
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        logger.error(f"[Analysis Error] {e}")
+        return "분석 중 오류가 발생했습니다."
