@@ -15,6 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from rest_framework.authentication import BasicAuthentication
 
+
 from .models import Link
 from .tasks import crawl_and_save_link
 from .serializers import LinkSerializer
@@ -254,3 +255,23 @@ def index(request):
 
 
 
+def convert_recommendation(request, pk):
+    """
+    추천 기사를 클릭했을 때 실행되는 중간 경유 뷰.
+    1. 상태를 RECOMMENDED -> PENDING으로 변경
+    2. 크롤링/요약 태스크 트리거 (비동기)
+    3. 실제 기사 URL로 리다이렉트
+    """
+    # 내 소유의 링크인지 확인하며 가져오기
+    link = get_object_or_404(Link, pk=pk, user=request.user)
+    
+    # 이미 완료된 게 아니라면, 크롤링 시작
+    if link.status == 'RECOMMENDED':
+        link.status = 'PENDING'
+        link.save(update_fields=['status'])
+        
+        # 비동기 작업 시작 (Celery)
+        crawl_and_save_link.delay(link.id)
+    
+    # 사용자에게는 원래 가려던 뉴스 페이지를 보여줌
+    return redirect(link.url)

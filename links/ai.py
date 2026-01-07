@@ -18,7 +18,7 @@ def generate_summary_and_tags(title, content):
     OpenAI gpt-4o-mini 모델을 사용하여 요약 및 태그 생성
     Return:
         {
-            "summary": "3줄 요약 텍스트...",
+            "summary": "• 첫 번째 요약...\n\n• 두 번째 요약...\n\n• 세 번째 요약...",
             "tags": ["태그1", "태그2", "태그3"]
         }
     """
@@ -35,9 +35,11 @@ def generate_summary_and_tags(title, content):
         system_prompt = (
             "You are a helpful tech news editor. "
             "Read the provided article and perform the following tasks:\n"
-            "1. Summarize the key points in Korean in 3 bullet points.\n"
-            "2. Extract 3-5 relevant keywords (tags) for categorization.\n"
-            "3. Output must be in valid JSON format with keys: 'summary' (string) and 'tags' (list of strings)."
+            "1. Summarize the key points in Korean.\n"
+            "2. Extract 3-5 relevant keywords (tags).\n"
+            "3. Output must be in valid JSON format."
+            "4. [IMPORTANT] The key 'summary' must be a JSON Array of 3 strings. "
+            "Do not include numbering or bullets inside the strings."
         )
         
         # 토큰 비용 절감을 위해 본문 앞부분 3000자만 사용 (뉴스 요약엔 충분)
@@ -58,14 +60,24 @@ def generate_summary_and_tags(title, content):
         raw_json = response.choices[0].message.content
         data = json.loads(raw_json)
         
+        raw_summary = data.get("summary", "")
+        formatted_summary = ""
+
+        # 리스트로 왔을 경우 불릿 포인트로 변환
+        if isinstance(raw_summary, list):
+            formatted_summary = "• " + "\n\n• ".join(raw_summary)
+        elif isinstance(raw_summary, str):
+            formatted_summary = raw_summary.strip()
+
         return {
-            "summary": data.get("summary", ""),
+            "summary": formatted_summary,
             "tags": data.get("tags", [])
         }
 
     except Exception as e:
         logger.error(f"OpenAI API Error: {e}")
         return None
+
     
 def get_embedding(text):
     """
@@ -86,6 +98,28 @@ def get_embedding(text):
         logger.error(f"Embedding Error: {e}")
         return None
     
+
+def get_embeddings_batch(text_list):
+    """
+    여러 개의 텍스트를 한 번의 API 호출로 벡터화합니다. (비용/시간 절감 핵심)
+    """
+    if not client or not text_list:
+        return []
+    
+    # 텍스트 길이 제한 (안전 장치)
+    sanitized_list = [t[:8000] for t in text_list]
+
+    try:
+        response = client.embeddings.create(
+            input=sanitized_list,
+            model="text-embedding-3-small"
+        )
+        # 입력 순서대로 정렬된 벡터 리스트 반환
+        return [item.embedding for item in response.data]
+    except Exception as e:
+        logger.error(f"Batch Embedding Error: {e}")
+        # 에러 시 None으로 채워서 인덱스 밀림 방지
+        return [None] * len(text_list)
 
 def update_user_interest_profile(user_id):
     """
@@ -142,9 +176,9 @@ def update_user_interest_profile(user_id):
 
     except Exception as e:
         print(f"[User Profiling] Error updating profile: {e}")
-        
 
-def get_recommendation_keywords(user_summary_text):
+
+def get_recommendation_keywords(short_term_text, long_term_context):
     """
     사용자의 최근 관심사(요약 텍스트 모음)를 바탕으로
     네이버 뉴스 검색에 사용할 키워드 3개를 추출합니다.
@@ -154,13 +188,21 @@ def get_recommendation_keywords(user_summary_text):
 
     try:
         system_prompt = (
-            "You are a helpful assistant for a news recommendation system. "
-            "Based on the user's reading history summary, suggest 3 specific Korean search keywords "
-            "to find related new articles on Naver News. "
-            "Output must be a JSON object with a single key 'keywords' which is a list of strings."
+            "You are a sophisticated news recommendation curator.\n"
+            "INPUT DATA:\n"
+            "1. Short-term Interest: Articles read TODAY (Transient trends/Spikes).\n"
+            "2. Long-term Interest: User's top tags & Representative articles from history (Core taste).\n\n"
+            "TASK:\n"
+            "Generate 3 Korean search keywords based on the following strategy to ensure diversity:\n"
+            "- Keyword 1: Based on Short-term Interest (Trending now)\n"
+            "- Keyword 2: Based on Long-term Interest (Deep dive into core taste)\n"
+            "- Keyword 3: A Mix of both OR a new related sub-topic.\n\n"
+            "OUTPUT must be a JSON object with a single key 'keywords' which is a list of strings."
         )
         
-        user_prompt = f"User's recent reading history summaries:\n{user_summary_text}"
+        user_prompt = (
+            f"Short-term (Today):\n{short_term_text}\n\n"
+            f"Long-term (History):\n{long_term_context}")
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -169,11 +211,17 @@ def get_recommendation_keywords(user_summary_text):
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            temperature=0.7
         )
 
         raw_json = response.choices[0].message.content
         data = json.loads(raw_json)
-        return data.get("keywords", [])[:3]
+        keywords = data.get("keywords", [])[:3]
+
+        while len(keywords) < 3:
+            keywords.append("최신 뉴스")
+        
+        return keywords
 
     except Exception as e:
         logger.error(f"[get_recommendation_keywords] Error: {e}")

@@ -28,4 +28,8 @@ urlpatterns = [
     
     # DRF 재시도: localhost:8000/api/links/1/retry/
     path('api/links/<int:link_id>/retry/', views.LinkRetryView.as_view(), name='api_link_retry'),
+
+    # [추가] 추천 기사 변환 및 리다이렉트 URL
+    path('recommendation/<int:pk>/convert/', views.convert_recommendation, name='convert_recommendation'),
+
 ]
