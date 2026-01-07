@@ -263,3 +263,44 @@ def analyze_user_interest(representative_articles):
     except Exception as e:
         logger.error(f"[Analysis Error] {e}")
         return "분석 중 오류가 발생했습니다."
+    
+
+def get_exploration_keywords(strong_cats, weak_cats):
+    """
+    사용자의 강점과 약점을 바탕으로 탐험적 학습을 위한 키워드를 생성합니다.
+    """
+    if not client: return []
+
+    # 프롬프트 구성
+    prompt = f"""
+    당신은 사용자의 지식 스펙트럼을 넓혀주는 '지식 큐레이터'입니다.
+    
+    [사용자 정보]
+    - 잘 아는 분야 (Strong): {', '.join(strong_cats)}
+    - 생소한 분야 (Weak): {', '.join(weak_cats)}
+    
+    [생성 가이드라인]
+    1. '브릿지 키워드': Strong 분야의 관점에서 Weak 분야를 탐구할 수 있는 융합형 주제 2개를 만드세요.
+    2. '와일드카드 키워드': Strong과 상관없이 Weak 분야에서 근본적이고 심도 있는 지식을 다루는 주제 1개를 만드세요.
+    3. 모든 키워드는 '최근 6개월 이내의 분석 리포트나 심층 기사'가 검색될 수 있도록 구체적이어야 합니다.
+    4. "이유", "전망", "분석", "원리", "영향"과 같은 단어를 적절히 섞어 정보 밀도가 높은 결과를 유도하세요.
+
+    [출력 형식]
+    - 오직 키워드만 쉼표(,)로 구분하여 한 줄로 출력하세요. (예: 키워드1, 키워드2, 키워드3)
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a professional knowledge curator assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7, # 적절한 창의성 유지
+        )
+        content = response.choices[0].message.content.strip()
+        keywords = [k.strip() for k in content.split(',') if k.strip()]
+        return keywords
+    except Exception as e:
+        print(f"GPT Keyword Generation Error: {e}")
+        return []

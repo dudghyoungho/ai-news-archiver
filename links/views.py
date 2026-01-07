@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from rest_framework.authentication import BasicAuthentication
+from django.db.models import Q
 
 
 from collections import Counter
@@ -172,17 +173,21 @@ class LinkRetryView(APIView):
 
 def get_link_context(user):
     """
-    공통 로직 분리: 링크 리스트와 pending 여부를 반환
+    공통 로직: 사용자가 봐야 할 의미 있는 링크(완료됨 + 추천됨)와
+    현재 서버에서 처리 중인 상태를 통합 관리합니다.
     """
-    links = Link.objects.filter(user=user).order_by('-created_at')
+    # [수정] 사용자가 화면에서 봐야 할 기사들만 필터링
+    links = Link.objects.filter(
+        Q(user=user) & 
+        (Q(status='COMPLETED') | Q(status='RECOMMENDED') | Q(status='PENDING') | Q(status='PROCESSING'))
+    ).order_by('-created_at')
     
-    # [핵심] 진행 중인(PENDING, PROCESSING) 건이 하나라도 있는지 확인
-    # exists()는 쿼리가 매우 가벼움 (데이터 전체 로딩 X)
+    # 처리 중인 건 확인
     has_pending = links.filter(status__in=['PENDING', 'PROCESSING']).exists()
     
     return {
         'links': links,
-        'has_pending': has_pending  # 이 변수가 HTML을 제어함
+        'has_pending': has_pending
     }
 
 @login_required
@@ -228,39 +233,31 @@ def htmx_link_create(request):
 
 @login_required
 def index(request):
-    
-    # 1. 내 링크 가져오기
-    links = Link.objects.filter(user=request.user).order_by('-created_at')
+    # 1. 공통 컨텍스트 가져오기 (이미 필터링된 links가 들어있음)
+    context = get_link_context(request.user)
+    links = context['links']
 
-    # 2. 태그 통계 계산 (Python 레벨에서 간단 처리)
+    # 2. 태그 통계 계산 (이미 가져온 links 활용)
     all_tags = []
     for link in links:
-        if link.tags: # 태그가 있으면
+        if link.status == 'COMPLETED' and link.tags: # 통계는 읽은 기사로만
             all_tags.extend(link.tags)
     
-    # 가장 많이 등장한 태그 Top 5 추출
-    # 예: [('경제', 5), ('AI', 3), ...]
     tag_counts = Counter(all_tags).most_common(5)
-    
-    # Chart.js에 넣기 좋게 라벨과 데이터로 분리
     chart_labels = [tag for tag, count in tag_counts]
     chart_data = [count for tag, count in tag_counts]
 
-    context = get_link_context(request.user)
-
+    # 컨텍스트 업데이트
     context.update({
         'chart_labels': chart_labels,
         'chart_data': chart_data,
     })
     
-    # 3. HTMX 요청 분기 처리 (중요!)
-    # HTMX가 "리스트만 업데이트해줘"라고 요청하면(hx-target="#link-list"), 
-    # 전체 페이지가 아니라 '리스트 부분'만 렌더링해서 보내줍니다.
+    # 3. HTMX 요청 분기 처리
     if request.headers.get('HX-Request'):
         return render(request, 'links/partials/link_list.html', context)
     
     return render(request, 'links/index.html', context)
-
 
 
 def convert_recommendation(request, pk):

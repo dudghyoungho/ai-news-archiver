@@ -53,6 +53,12 @@ class Link(models.Model):
     def __str__(self):
         return f"[{self.publisher}] {self.title}" if self.title else self.url
     
+    def save(self, *args, **kwargs):
+        # 네이버 뉴스가 아닌데 추천/완료 상태가 되려고 하면 막음 (디버깅용)
+        if self.status in ['RECOMMENDED', 'COMPLETED'] and "naver.com" not in self.url:
+            raise ValueError("AI 요약은 네이버 뉴스 URL만 가능합니다.")
+        super().save(*args, **kwargs)
+    
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')

@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from datetime import timedelta
 from collections import Counter # [필수] 태그 통계용
+import re
 
 from celery import shared_task
 from django.contrib.auth.models import User
@@ -18,13 +19,14 @@ from pgvector.django import CosineDistance
 from .models import Link, UserProfile
 
 # [필수] 크롤러 및 AI 모듈 임포트
-from .crawler import get_naver_news_info, search_naver_news
+from .crawler import get_naver_news_info, search_naver_news, parse_naver_ids_and_normalize_url
 from .ai import (
     generate_summary_and_tags, 
     get_embedding, 
     get_embeddings_batch, 
     update_user_interest_profile, 
-    get_recommendation_keywords
+    get_recommendation_keywords,
+    get_exploration_keywords,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,16 @@ RETRYABLE_REASON_PREFIXES = (
 )
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
+def is_valid_naver_article(url):
+    """
+    URL이 네이버 뉴스 본문 페이지인지 (oid, aid 추출 가능한지) 확인합니다.
+    """
+    # 일반적인 n.news.naver.com 형식 및 구형 read.nhn 형식 체크
+    patterns = [
+        r"article/(\d+)/(\d+)",       # n.news.naver.com/article/001/000123
+        r"read\.nhn\?.*oid=(\d+)",    # news.naver.com/main/read.nhn?oid=001&aid=123
+    ]
+    return any(re.search(p, url) for p in patterns)
 
 # =========================================================
 # 1. 크롤링 및 저장 태스크
@@ -153,219 +165,224 @@ def crawl_and_save_link(self, link_id: int):
 # 2. 추천 시스템 (Two-Track + Hourly Recency + Dedup)
 # =========================================================
 @shared_task
-def recommend_articles_for_user(user_id):
+def recommend_articles_for_user(user_id: int):
+    """
+    사용자의 '관심사 기반' 추천 (Exploit)
+    - user.profile.interest_vector 기준으로 네이버 뉴스 후보를 scoring 후 RECOMMENDED 저장
+    - 외부 언론사 링크는 normalize_naver_candidate에서 컷
+    """
     try:
         user = User.objects.get(id=user_id)
-        
-        # 1. 사용자 프로필 확인
+
+        # 1) user_vector 확보
         try:
             profile = user.profile
             if profile.interest_vector is None:
-                logger.info(f"User {user_id} has no interest vector. Skipping.")
+                logger.info(f"[Exploit] user={user_id} has no interest_vector")
                 return "No interest vector"
             user_vector = np.array(profile.interest_vector, dtype=np.float32)
         except UserProfile.DoesNotExist:
             return "No user profile"
 
-        # 2. Two-Track 데이터 수집 (장기/단기 분리)
-        
-        # A. 단기 기억 (Short-term)
-        one_day_ago = timezone.now() - timedelta(days=1)
-        short_term_links = Link.objects.filter(
-            user=user, 
-            status='COMPLETED',
+        # 2) Short-term / Long-term 컨텍스트 만들기
+        now = timezone.now()
+        one_day_ago = now - timedelta(days=1)
+        one_month_ago = now - timedelta(days=30)
+
+        short_links = Link.objects.filter(
+            user=user,
+            status="COMPLETED",
             created_at__gte=one_day_ago
-        ).order_by('-created_at')[:5]
-        
-        short_term_text = "\n".join([f"- {l.title}" for l in short_term_links])
+        ).order_by("-created_at")[:5]
 
-        # B. 장기 기억 (Long-term)
-        one_month_ago = timezone.now() - timedelta(days=30)
-        
-        # B-1. 태그 통계
-        long_term_qs = Link.objects.filter(
-            user=user, status='COMPLETED', created_at__gte=one_month_ago
+        short_term_text = "\n".join([f"- {l.title}" for l in short_links])
+
+        long_qs = Link.objects.filter(
+            user=user,
+            status="COMPLETED",
+            created_at__gte=one_month_ago
         )
-        all_tags = []
-        for tags in long_term_qs.values_list('tags', flat=True):
-            if tags: all_tags.extend(tags)
-        
-        top_tags = [tag for tag, count in Counter(all_tags).most_common(5)]
 
-        # B-2. 벡터 기반 대표 기사
-        core_interest_articles = []
-        if user.profile.interest_vector is not None:
-            core_links = Link.objects.filter(
-                user=user,
-                status='COMPLETED',
-                created_at__gte=one_month_ago,
-                embedding__isnull=False
-            ).annotate(
-                distance=CosineDistance('embedding', user.profile.interest_vector)
-            ).order_by('distance')[:3]
-            core_interest_articles = [l.title for l in core_links]
+        all_tags = []
+        for tags in long_qs.values_list("tags", flat=True):
+            if tags:
+                all_tags.extend(tags)
+        top_tags = [t for t, _ in Counter(all_tags).most_common(5)]
+
+        core_titles = []
+        core_links = Link.objects.filter(
+            user=user,
+            status="COMPLETED",
+            created_at__gte=one_month_ago,
+            embedding__isnull=False
+        ).annotate(
+            distance=CosineDistance("embedding", profile.interest_vector)
+        ).order_by("distance")[:3]
+        core_titles = [l.title for l in core_links]
 
         long_term_text = (
             f"Top Tags: {', '.join(top_tags)}\n"
-            f"Representative Articles: {', '.join(core_interest_articles)}"
+            f"Representative Articles: {', '.join(core_titles)}"
         )
 
         if not short_term_text and not long_term_text:
+            logger.info(f"[Exploit] user={user_id} not enough history")
             return "Not enough history"
 
-        # 3. 키워드 추천
+        # 3) 키워드 생성 (AI)
         keywords = get_recommendation_keywords(short_term_text, long_term_text)
-        if not keywords: return "Failed keywords"
-        logger.info(f"[Recommend] Keywords: {keywords}")
+        if not keywords:
+            return "No keywords"
+        logger.info(f"[Exploit] user={user_id} keywords={keywords}")
 
-        # 4. 네이버 뉴스 검색 (후보군 확보)
-        raw_candidates = []
+        # 4) 후보 수집 (네이버만, normalize util 사용)
+        from .recommend_utils import normalize_naver_candidate
+
+        existing_urls = set(Link.objects.filter(user=user).values_list("url", flat=True))
         seen_urls = set()
-        existing_urls = set(Link.objects.filter(user=user).values_list('url', flat=True))
 
+        raw_candidates = []
         for kw in keywords:
-            # display=100으로 늘려 아웃링크 필터링 대비
             items = search_naver_news(kw, display=100)
-            
+
             for item in items:
-                url = item.get('originallink') or item.get('link')
-                # 네이버 뉴스만 허용
-                if 'naver.com' not in url: continue
-                
-                if url in seen_urls or url in existing_urls: continue
-                
+                # ✅ "외부 언론사 링크로 연결" 문제의 원인:
+                # originallink를 쓰면 거의 외부로 빠짐.
+                # => link(네이버 URL)만 쓰고 normalize로 검증.
+                raw_url = item.get("link")
+                ident = normalize_naver_candidate(raw_url)
+                if not ident:
+                    continue
+
+                url = ident["normalized_url"]
+                if url in seen_urls or url in existing_urls:
+                    continue
+
                 seen_urls.add(url)
-                clean_title = html.unescape(item.get('title', '')).replace('<b>', '').replace('</b>', '')
-                
+
+                clean_title = html.unescape(item.get("title", "")).replace("<b>", "").replace("</b>", "")
+                clean_desc = html.unescape(item.get("description", "")).replace("<b>", "").replace("</b>", "")
+
                 raw_candidates.append({
-                    'item': item,
-                    'clean_title': clean_title,
-                    'url': url,
-                    'keyword': kw
+                    "url": url,
+                    "oid": ident["oid"],
+                    "aid": ident["aid"],
+                    "title": clean_title,
+                    "desc": clean_desc,
+                    "keyword": kw,
+                    "pubDate": item.get("pubDate", "")
                 })
 
-        if not raw_candidates: return "No candidates"
+        logger.info(f"[Exploit] user={user_id} raw_candidates={len(raw_candidates)}")
+        if not raw_candidates:
+            return "No candidates"
 
-        # 5. 중복 제거 (Dedup)
+        # 5) 제목 Dedup (후보끼리)
+        TITLE_SIM_THRESHOLD = 0.6
         unique_candidates = []
-        TITLE_SIMILARITY_THRESHOLD = 0.6 
-        
-        # A. 후보군끼리
         for cand in raw_candidates:
-            is_duplicate = False
-            for unique in unique_candidates:
-                seq = difflib.SequenceMatcher(None, cand['clean_title'], unique['clean_title'])
-                if seq.ratio() > TITLE_SIMILARITY_THRESHOLD:
-                    is_duplicate = True
+            dup = False
+            for u in unique_candidates:
+                if difflib.SequenceMatcher(None, cand["title"], u["title"]).ratio() > TITLE_SIM_THRESHOLD:
+                    dup = True
                     break
-            if not is_duplicate:
+            if not dup:
                 unique_candidates.append(cand)
 
-        # B. DB 기사와
-        recent_titles = list(Link.objects.filter(
-            user=user,
-            created_at__gte=timezone.now() - timedelta(days=3)
-        ).values_list('title', flat=True))
+        logger.info(f"[Exploit] user={user_id} unique_candidates={len(unique_candidates)}")
+        if not unique_candidates:
+            return "No unique candidates"
 
-        final_candidates_to_embed = []
-        texts_to_embed = []
+        # 6) 배치 임베딩 + 점수 계산
+        texts_to_embed = [f"{c['title']}\n{c['desc']}" for c in unique_candidates]
+        vectors = get_embeddings_batch(texts_to_embed)
 
-        for cand in unique_candidates:
-            is_already_read = False
-            for db_title in recent_titles:
-                seq = difflib.SequenceMatcher(None, cand['clean_title'], db_title)
-                if seq.ratio() > TITLE_SIMILARITY_THRESHOLD:
-                    is_already_read = True
-                    break
-            
-            if not is_already_read:
-                final_candidates_to_embed.append(cand)
-                texts_to_embed.append(f"{cand['clean_title']}\n{cand['item']['description']}")
+        scored = []
+        norm_u = np.linalg.norm(user_vector)
 
-        # 6. 배치 임베딩 및 점수 계산
-        vectors = get_embeddings_batch(texts_to_embed) if texts_to_embed else []
-        scored_candidates = []
-        
-        for i, cand in enumerate(final_candidates_to_embed):
-            vec = vectors[i]
-            if vec is None: continue
-            
+        for cand, vec in zip(unique_candidates, vectors):
+            if vec is None:
+                continue
+
             cand_vec = np.array(vec, dtype=np.float32)
-            norm_u = np.linalg.norm(user_vector)
             norm_c = np.linalg.norm(cand_vec)
-            similarity = np.dot(user_vector, cand_vec) / (norm_u * norm_c) if (norm_u > 0 and norm_c > 0) else 0
+            similarity = (np.dot(user_vector, cand_vec) / (norm_u * norm_c)) if (norm_u > 0 and norm_c > 0) else 0.0
 
-            # [시간 단위 최신성]
+            # 최신성(시간 단위) 가산점
+            recency_score = 0.5
             try:
-                pub_date = date_parser.parse(cand['item']['pubDate'])
-                if pub_date.tzinfo is None:
-                    now = timezone.now().replace(tzinfo=None)
-                else:
-                    now = timezone.now()
-                
-                hours_diff = max(0, (now - pub_date).total_seconds()) / 3600
-                
-                if hours_diff < 1: recency_score = 1.0
-                elif hours_diff < 6: recency_score = 0.9
-                elif hours_diff < 12: recency_score = 0.8
-                elif hours_diff < 24: recency_score = 0.6
-                else: 
-                    days = hours_diff / 24
-                    recency_score = max(0, 0.5 - (days * 0.15))
+                pub_date = date_parser.parse(cand["pubDate"]) if cand["pubDate"] else None
+                if pub_date:
+                    if pub_date.tzinfo is None:
+                        pub_date = timezone.make_aware(pub_date, timezone.get_current_timezone())
+                    hours = max(0, (now - pub_date).total_seconds()) / 3600
+                    if hours < 1: recency_score = 1.0
+                    elif hours < 6: recency_score = 0.9
+                    elif hours < 12: recency_score = 0.8
+                    elif hours < 24: recency_score = 0.6
+                    else:
+                        days = hours / 24
+                        recency_score = max(0.0, 0.5 - days * 0.15)
             except Exception:
                 recency_score = 0.5
 
-            keyword_score = 1.0 if cand['keyword'] in cand['clean_title'] else 0.0
-            
+            keyword_score = 1.0 if (cand["keyword"] and cand["keyword"] in cand["title"]) else 0.0
             final_score = (similarity * 0.7) + (recency_score * 0.2) + (keyword_score * 0.1)
-            scored_candidates.append((final_score, cand))
 
-        # 7. 랭킹 & 쿼터제
-        scored_candidates.sort(key=lambda x: x[0], reverse=True)
-        
-        final_top_5 = []
-        keyword_counts = {}
-        
-        for score, cand in scored_candidates:
-            if len(final_top_5) >= 5: break
-            kw = cand['keyword']
-            current_count = keyword_counts.get(kw, 0)
-            
-            if current_count >= 2: continue # 쿼터 제한
-            
-            final_top_5.append((score, cand))
-            keyword_counts[kw] = current_count + 1
+            scored.append((final_score, similarity, recency_score, keyword_score, cand))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if not scored:
+            return "No scored candidates"
+
+        # 7) 쿼터제(키워드 다양성)로 Top5
+        final_top = []
+        kw_counts = {}
+        for s, sim, r, k, cand in scored:
+            if len(final_top) >= 5:
+                break
+            kw = cand["keyword"]
+            if kw_counts.get(kw, 0) >= 2:
+                continue
+            final_known = cand["url"]
+            final_top.append((s, sim, r, k, cand))
+            kw_counts[kw] = kw_counts.get(kw, 0) + 1
 
         # 부족하면 채우기
-        if len(final_top_5) < 5:
-            picked_urls = set(c['url'] for s, c in final_top_5)
-            for score, cand in scored_candidates:
-                if len(final_top_5) >= 5: break
-                if cand['url'] not in picked_urls:
-                    final_top_5.append((score, cand))
+        if len(final_top) < 5:
+            picked = set(x[4]["url"] for x in final_top)
+            for s, sim, r, k, cand in scored:
+                if len(final_top) >= 5:
+                    break
+                if cand["url"] in picked:
+                    continue
+                final_top.append((s, sim, r, k, cand))
+                picked.add(cand["url"])
 
-        # 8. 저장
-        saved_count = 0
+        # 8) 저장
+        saved = 0
         with transaction.atomic():
-            for score, cand in final_top_5:
-                if Link.objects.filter(user=user, url=cand['url']).exists(): continue
+            for s, sim, r, k, cand in final_top:
+                if Link.objects.filter(user=user, url=cand["url"]).exists():
+                    continue
 
                 Link.objects.create(
                     user=user,
-                    url=cand['url'],
-                    title=cand['clean_title'],
-                    image_url=None, 
-                    publisher="AI Recommend", 
-                    status='RECOMMENDED',
-                    failed_reason=f"Score: {score:.4f}, Keyword: {cand['keyword']}"
+                    url=cand["url"],
+                    naver_oid=cand["oid"],
+                    naver_aid=cand["aid"],
+                    title=cand["title"],
+                    publisher="AI Recommend",
+                    status="RECOMMENDED",
+                    failed_reason=f"[Exploit] score={s:.4f} sim={sim:.4f} recency={r:.2f} kw={cand['keyword']}"
                 )
-                saved_count += 1
-        
-        logger.info(f"[Recommend] Saved {saved_count} articles.")
-        return f"Saved {saved_count}"
+                saved += 1
+
+        logger.info(f"[Exploit] user={user_id} saved={saved}")
+        return f"Saved {saved}"
 
     except Exception as e:
-        logger.error(f"[Recommend] Error: {e}")
+        logger.error(f"[Exploit] Error user={user_id}: {e}", exc_info=True)
         return f"Error: {e}"
 
 
@@ -388,3 +405,161 @@ def recommend_articles_daily():
     for user in User.objects.all():
         recommend_articles_for_user.delay(user.id)
     return "Started tasks"
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+@shared_task
+def recommend_exploratory_articles(user_id: int):
+    """
+    사용자의 '지식 공백' 기반 추천 (Explore)
+    - strong/weak 카테고리에서 "브릿지 키워드 + 와일드카드"로 탐험 추천
+    - 너무 취향에 붙는 기사(similarity 너무 높음)는 제외 (새로움 확보)
+    """
+    from .utils import analyze_knowledge_gap, is_within_six_months, is_too_similar
+    from .recommend_utils import normalize_naver_candidate
+
+    try:
+        user = User.objects.get(id=user_id)
+        profile = getattr(user, "profile", None)
+        if not profile or profile.interest_vector is None:
+            return "User vector not found"
+
+        user_vector = np.array(profile.interest_vector, dtype=np.float32)
+        norm_u = np.linalg.norm(user_vector)
+        now = timezone.now()
+
+        # 1) strong / weak 분석
+        strong, weak = analyze_knowledge_gap(user)
+        keywords = get_exploration_keywords(strong, weak)
+        if not keywords:
+            return "No exploration keywords"
+
+        logger.info(f"[Explore] user={user_id} strong={strong} weak={weak} keywords={keywords}")
+
+        # 2) 후보 수집
+        existing_urls = set(Link.objects.filter(user=user).values_list("url", flat=True))
+        existing_titles = list(Link.objects.filter(user=user).values_list("title", flat=True))
+
+        candidates = []
+        seen_urls = set()
+
+        for kw in keywords:
+            items = search_naver_news(kw, display=80)
+
+            for item in items:
+                raw_url = item.get("link")
+                ident = normalize_naver_candidate(raw_url)
+                if not ident:
+                    continue
+
+                url = ident["normalized_url"]
+                if url in existing_urls or url in seen_urls:
+                    continue
+
+                # 최근 6개월 필터
+                if not is_within_six_months(item.get("pubDate", "")):
+                    continue
+
+                clean_title = html.unescape(item.get("title", "")).replace("<b>", "").replace("</b>", "")
+                if is_too_similar(clean_title, existing_titles):
+                    continue
+
+                seen_urls.add(url)
+                existing_titles.append(clean_title)
+
+                clean_desc = html.unescape(item.get("description", "")).replace("<b>", "").replace("</b>", "")
+
+                candidates.append({
+                    "url": url,
+                    "oid": ident["oid"],
+                    "aid": ident["aid"],
+                    "title": clean_title,
+                    "desc": clean_desc,
+                    "keyword": kw,
+                    "pubDate": item.get("pubDate", "")
+                })
+
+        logger.info(f"[Explore] user={user_id} candidates={len(candidates)}")
+        if not candidates:
+            return "No candidates"
+
+        # 3) 임베딩 + similarity 계산 (Explore는 "너무 익숙한 것" 제거)
+        texts = [f"{c['title']}\n{c['desc']}" for c in candidates]
+        vectors = get_embeddings_batch(texts)
+
+        scored = []
+        for cand, vec in zip(candidates, vectors):
+            if vec is None:
+                continue
+
+            cand_vec = np.array(vec, dtype=np.float32)
+            norm_c = np.linalg.norm(cand_vec)
+
+            sim = (np.dot(user_vector, cand_vec) / (norm_u * norm_c)) if (norm_u > 0 and norm_c > 0) else 0.0
+
+            # ✅ Explore 정책:
+            # - 너무 유사하면(취향 그대로) 제외
+            # - 너무 안 맞으면(완전 무관)도 제외 (학습 브릿지 목적)
+            if sim > 0.85:
+                continue
+            if sim < 0.15:
+                continue
+
+            # 최신성
+            recency_score = 0.5
+            try:
+                pub_date = date_parser.parse(cand["pubDate"]) if cand["pubDate"] else None
+                if pub_date:
+                    if pub_date.tzinfo is None:
+                        pub_date = timezone.make_aware(pub_date, timezone.get_current_timezone())
+                    hours = max(0, (now - pub_date).total_seconds()) / 3600
+                    if hours < 6:
+                        recency_score = 1.0
+                    elif hours < 24:
+                        recency_score = 0.8
+                    else:
+                        days = hours / 24
+                        recency_score = max(0.3, 0.7 - days * 0.1)
+            except Exception:
+                recency_score = 0.5
+
+            # Explore는 새로움(1 - sim)을 조금 반영
+            novelty = 1.0 - sim
+            final_score = (novelty * 0.45) + (recency_score * 0.35) + (sim * 0.20)
+
+            scored.append((final_score, sim, recency_score, cand))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if not scored:
+            return "No scored exploration candidates"
+
+        # 4) 최종 선택: 3개 (너무 많이 뿌리면 UX 난잡)
+        final_picks = scored[:3]
+
+        # 5) 저장
+        saved = 0
+        with transaction.atomic():
+            for s, sim, r, cand in final_picks:
+                if Link.objects.filter(user=user, url=cand["url"]).exists():
+                    continue
+
+                Link.objects.create(
+                    user=user,
+                    url=cand["url"],
+                    naver_oid=cand["oid"],
+                    naver_aid=cand["aid"],
+                    title=cand["title"],
+                    publisher="AI Explore",
+                    status="RECOMMENDED",
+                    failed_reason=f"[Explore] score={s:.4f} sim={sim:.4f} recency={r:.2f} kw={cand['keyword']}"
+                )
+                saved += 1
+
+        logger.info(f"[Explore] user={user_id} saved={saved}")
+        return f"Saved {saved}"
+
+    except Exception as e:
+        logger.error(f"[Explore] Error user={user_id}: {e}", exc_info=True)
+        return f"Error: {e}"
