@@ -48,7 +48,11 @@
         <form hx-post="{% url 'htmx_recommend_interest' %}"
               hx-target="#link-list"
               hx-swap="outerHTML"
-              hx-on::after-request="setTimeout(() => htmx.trigger('#link-list', 'refresh-links'), 5000)">
+              hx-on::after-request="
+              document.getElementById('recommend-indicator').classList.remove('hidden');
+              setTimeout(() => document.getElementById('recommend-indicator').classList.add('hidden'), 5000);
+              setTimeout(() => htmx.ajax('GET','/',{target:'#link-list',select:'#link-list',swap:'outerHTML'}), 5000);
+            ">
           {% csrf_token %}
           <button type="submit"
                   class="bg-purple-600 text-white px-4 py-2 rounded-md text-sm hover:bg-purple-700 transition">
@@ -59,7 +63,11 @@
         <form hx-post="{% url 'htmx_recommend_explore' %}"
                 hx-target="#link-list"
                 hx-swap="outerHTML"
-                hx-on::after-request="setTimeout(() => htmx.trigger('#link-list', 'refresh-links'), 5000)">
+                hx-on::after-request="
+                document.getElementById('recommend-indicator').classList.remove('hidden');
+                setTimeout(() => document.getElementById('recommend-indicator').classList.add('hidden'), 5000);
+                setTimeout(() => htmx.ajax('GET','/',{target:'#link-list',select:'#link-list',swap:'outerHTML'}), 5000);
+              ">
             {% csrf_token %}
             <button type="submit"
                     class="bg-emerald-600 text-white px-4 py-2 rounded-md text-sm hover:bg-emerald-700 transition">
@@ -68,10 +76,22 @@
           </form>
       </div>
 
+      <div id="recommend-indicator" class="hidden mt-3 text-xs text-gray-600">
+        추천할 기사를 가져오는 중입니다… 잠시만 기다려주세요.
+      </div>
+    
       <p class="text-xs text-gray-500 mt-2">
-        추천은 비동기로 생성됩니다. 잠시 후 자동 반영됩니다.
+        하루에 4번, 6시간마다 1번 씩 자동으로 기사가 추천됩니다.
       </p>
     </div>
+    
+    <style>
+      /* 폼이 요청 중이면(HTMX가 htmx-request 부여) 버튼을 로딩 상태로 */
+      form.htmx-request .recommend-btn { opacity: .7; pointer-events: none; }
+      form.htmx-request .recommend-btn .label { content: ""; }
+      form.htmx-request .recommend-btn .spinner { display: inline-block !important; }
+      form.htmx-request .recommend-btn .label::after { content: " 처리 중…"; }
+    </style>
 
   </div>
 

@@ -60,6 +60,8 @@
           {% else %}
             AI추천
           {% endif %}
+        {% elif link.status == 'COMPLETED' %}
+          READ 
         {% else %}
           {{ link.status }}
         {% endif %}
