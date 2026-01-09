@@ -12,6 +12,19 @@ class Link(models.Model):
         ('RECOMMENDED', 'AI추천'),
     ]
 
+    RECO_TYPE_CHOICES = [
+        ("PERSONAL", "관심사 기반"),
+        ("EXPLORE", "탐험"),
+    ]
+
+    recommendation_type = models.CharField(
+        max_length=20,
+        choices=RECO_TYPE_CHOICES,
+        blank=True,
+        null=True,
+        db_index=True,
+    )
+
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     url = models.URLField(max_length=500)
     naver_oid = models.CharField(max_length=10, blank=True, null=True) 
@@ -68,6 +81,9 @@ class UserProfile(models.Model):
     
     # 마지막으로 벡터가 업데이트된 시각 (Time-Decay 계산용)
     last_updated = models.DateTimeField(auto_now=True)
+
+    stats_snapshot = models.JSONField(default=dict, blank=True)
+    stats_snapshot_updated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username}'s Profile"

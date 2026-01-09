@@ -21,12 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-1u@ve1=ga_)kfi-ze+)^9s_4hf3h&oencf-1(()v$0d7&!nryy'
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-default-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
 
 # Application definition
@@ -158,5 +158,5 @@ CSRF_TRUSTED_ORIGINS = [
     'chrome-extension://kcimckmkkbnlleakaibncopaalgndomn',
 ]
 
-NAVER_CLIENT_ID = "aa_lAR67DjAvyhjfsVg1"
-NAVER_CLIENT_SECRET = "cjCsNRYj6n"
+NAVER_CLIENT_ID = os.environ.get('NAVER_CLIENT_ID')
+NAVER_CLIENT_SECRET = os.environ.get('NAVER_CLIENT_SECRET')

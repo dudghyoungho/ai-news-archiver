@@ -1,10 +1,10 @@
-# links/views.py
 import json
 from django.shortcuts import get_object_or_404, render, redirect
 from django.db import transaction
+from datetime import timedelta
 from django.utils import timezone
-from django.contrib.auth.decorators import login_required # 추가
-from django.views.decorators.http import require_POST     # 추가
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -24,10 +24,11 @@ from django.db.models.functions import TruncDate
 from pgvector.django import CosineDistance # 임포트 확인
 from .ai import analyze_user_interest # 임포트 추가
 
-from .models import Link
-from .tasks import crawl_and_save_link
+from .models import Link, UserProfile
+from .tasks import crawl_and_save_link, recommend_articles_for_user, recommend_exploratory_articles
 from .serializers import LinkSerializer
 from .utils import determine_persona, CATEGORY_KEYWORDS
+
 
 
 
@@ -176,14 +177,33 @@ def get_link_context(user):
     공통 로직: 사용자가 봐야 할 의미 있는 링크(완료됨 + 추천됨)와
     현재 서버에서 처리 중인 상태를 통합 관리합니다.
     """
+
+    # 10분 이상 PROCESSING이면 비정상으로 보고 FAILED 처리
+    stale_cutoff = timezone.now() - timedelta(minutes=10)
+    Link.objects.filter(
+        user=user,
+        status='PROCESSING',
+        updated_at__lt=stale_cutoff
+    ).update(status='FAILED', failed_reason='STALE_PROCESSING_TIMEOUT')
+
+    # PENDING도 너무 오래되면 FAILED 처리(선택)
+    Link.objects.filter(
+        user=user,
+        status='PENDING',
+        updated_at__lt=stale_cutoff
+    ).update(status='FAILED', failed_reason='STALE_PENDING_TIMEOUT')
+
     # [수정] 사용자가 화면에서 봐야 할 기사들만 필터링
     links = Link.objects.filter(
-        Q(user=user) & 
-        (Q(status='COMPLETED') | Q(status='RECOMMENDED') | Q(status='PENDING') | Q(status='PROCESSING'))
+        user=user,
+        status__in=['COMPLETED', 'RECOMMENDED', 'FAILED', 'PARTIAL']
     ).order_by('-created_at')
     
     # 처리 중인 건 확인
-    has_pending = links.filter(status__in=['PENDING', 'PROCESSING']).exists()
+    has_pending = Link.objects.filter(
+        user=user,
+        status__in=['PENDING', 'PROCESSING']
+    ).exists()
     
     return {
         'links': links,
@@ -230,6 +250,30 @@ def htmx_link_create(request):
     context = get_link_context(request.user)
     # 5. 리스트 HTML 조각만 렌더링해서 반환 (HTMX가 이걸 받아서 갈아끼움)
     return render(request, 'links/partials/link_list.html', context)
+
+
+@login_required
+@require_POST
+def htmx_recommend_interest(request):
+    """
+    관심사 기반 추천 즉시 실행 (Celery 큐잉)
+    """
+    recommend_articles_for_user.delay(request.user.id)
+
+    # 바로 UI를 갱신하고 싶으면, '대기중' 안내를 같이 보여주면 좋음
+    context = get_link_context(request.user)
+    return render(request, "links/partials/link_list.html", context)
+
+@login_required
+@require_POST
+def htmx_recommend_explore(request):
+    """
+    탐험 추천 즉시 실행 (Celery 큐잉)
+    """
+    recommend_exploratory_articles.delay(request.user.id)
+
+    context = get_link_context(request.user)
+    return render(request, "links/partials/link_list.html", context)
 
 @login_required
 def index(request):
@@ -281,102 +325,165 @@ def convert_recommendation(request, pk):
     # 사용자에게는 원래 가려던 뉴스 페이지를 보여줌
     return redirect(link.url)
 
-
-
+@login_required
 def stats_page(request):
-    """통계 페이지 껍데기"""
-    return render(request, 'links/stats.html')
-
-def stats_content(request):
-    """HTMX로 로딩되는 실제 통계 데이터"""
+    """
+    스냅샷 기반 '껍데기' 페이지.
+    - 여기서는 절대 GPT/통계 계산을 하지 않음
+    - 저장된 snapshot이 있으면 그것을 렌더
+    - 없으면 empty 화면
+    """
     user = request.user
-    
-    # 1. 읽은 기사 가져오기
-    completed_links = Link.objects.filter(user=user, status='COMPLETED')
 
-    # 데이터가 없으면 빈 화면 표시
+    # 프로필 보장
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+
+    snapshot = profile.stats_snapshot or {}
+    has_snapshot = bool(snapshot) and snapshot.get("total_count", 0) > 0
+
+    if not has_snapshot:
+        # 아직 snapshot이 없다면 빈 화면(안내) 렌더
+        return render(request, "links/stats.html", {
+            "has_snapshot": False,
+            "snapshot_updated_at": profile.stats_snapshot_updated_at,
+        })
+
+    # snapshot을 stats_content.html이 기대하는 변수명으로 매핑해서 전달
+    context = {
+        "has_snapshot": True,
+        "snapshot_updated_at": profile.stats_snapshot_updated_at,
+
+        "persona": snapshot.get("persona"),
+        "ai_insight": snapshot.get("ai_insight"),
+        "total_count": snapshot.get("total_count", 0),
+
+        # 아래 값들은 템플릿에서 JS로 읽기 쉽도록 JSON 문자열로 유지
+        "tag_labels": json.dumps(snapshot.get("tag_labels", []), ensure_ascii=False),
+        "tag_data": json.dumps(snapshot.get("tag_data", [])),
+        "cat_labels": json.dumps(snapshot.get("cat_labels", []), ensure_ascii=False),
+        "cat_data": json.dumps(snapshot.get("cat_data", [])),
+        "trend_labels": json.dumps(snapshot.get("trend_labels", []), ensure_ascii=False),
+        "trend_data": json.dumps(snapshot.get("trend_data", [])),
+    }
+
+    # stats.html 안에서 partial include로 렌더하는 구조라면
+    # stats.html이 context를 그대로 받아야 함
+    return render(request, "links/stats.html", context)
+
+
+@login_required
+def stats_content(request):
+    """
+    '새로고침 버튼'으로만 호출되는 HTMX partial.
+    - 통계 계산 + AI 브리핑 생성(원하면)
+    - 결과를 UserProfile.stats_snapshot에 저장
+    - partial(stats_content.html) 반환
+    """
+    user = request.user
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+
+    # 1) 읽은 기사
+    completed_links = Link.objects.filter(user=user, status="COMPLETED")
+
     if not completed_links.exists():
-        return render(request, 'links/partials/stats_empty.html')
+        # snapshot도 비워두고 updated_at도 갱신하지 않음(원하면 초기화 가능)
+        return render(request, "links/partials/stats_empty.html")
 
     # =========================================================
-    # [Logic 1] AI 지식 브리핑 (GPT) - 데이터가 있을 때만
+    # [Logic 1] AI 지식 브리핑 (선택)
+    # - 핵심: stats_content에서만 호출됨
     # =========================================================
     ai_insight = None
-    if hasattr(user, 'profile') and user.profile.interest_vector is not None:
-        # 내 취향과 가장 가까운 기사 5개 찾기
-        closest_links = Link.objects.filter(
-            user=user,
-            status='COMPLETED',
-            embedding__isnull=False
-        ).annotate(
-            distance=CosineDistance('embedding', user.profile.interest_vector)
-        ).order_by('distance')[:5]
-        
-        representative_texts = [link.title for link in closest_links]
-        
-        # GPT 분석 호출 (시간이 좀 걸릴 수 있음)
+    if profile.interest_vector is not None:
+        closest_links = (
+            Link.objects.filter(user=user, status="COMPLETED", embedding__isnull=False)
+            .annotate(distance=CosineDistance("embedding", profile.interest_vector))
+            .order_by("distance")[:5]
+        )
+        representative_texts = [l.title for l in closest_links if l.title]
         if representative_texts:
-            ai_insight = analyze_user_interest(representative_texts)
+            try:
+                ai_insight = analyze_user_interest(representative_texts)
+            except Exception as e:
+                logger.warning(f"[stats_content] analyze_user_interest error user={user.id}: {e}")
+                ai_insight = None
 
     # =========================================================
-    # [Logic 2] 페르소나 분석 (utils.py 활용)
+    # [Logic 2] 페르소나
     # =========================================================
     persona = determine_persona(completed_links)
 
     # =========================================================
-    # [Logic 3] 차트 데이터 계산 (이 부분이 누락되어 에러가 났을 것임)
+    # [Logic 3] 차트 데이터
     # =========================================================
-    
-    # 3-1. 태그 데이터 준비 (Bar Chart)
+    # 3-1. 태그 (Bar)
     all_tags = []
     for link in completed_links:
         if link.tags:
             all_tags.extend(link.tags)
-            
+
     tag_counts = Counter(all_tags).most_common(10)
     tag_labels = [tag for tag, count in tag_counts]
     tag_data = [count for tag, count in tag_counts]
 
-    # 3-2. 카테고리 데이터 준비 (Radar Chart)
-    # utils.py의 CATEGORY_KEYWORDS를 재활용하여 일관성 유지
+    # 3-2. 카테고리 (Radar)
     cat_scores = {k: 0 for k in CATEGORY_KEYWORDS.keys()}
-    
     for tag in all_tags:
         for cat, keywords in CATEGORY_KEYWORDS.items():
             if any(k in tag for k in keywords):
                 cat_scores[cat] += 1
                 break
-    
     cat_labels = list(cat_scores.keys())
     cat_data = list(cat_scores.values())
 
-    # 3-3. 일별 추이 데이터 준비 (Line Chart)
+    # 3-3. 추이 (Line) - 최근 14일
     daily_stats = (
         completed_links
-        .annotate(date=TruncDate('created_at'))
-        .values('date')
-        .annotate(count=Count('id'))
-        .order_by('date')
+        .annotate(date=TruncDate("created_at"))
+        .values("date")
+        .annotate(count=Count("id"))
+        .order_by("date")
     )
-    # 날짜 포맷팅 (MM-DD)
-    trend_labels = [item['date'].strftime('%m-%d') for item in daily_stats][-14:] # 최근 2주만
-    trend_data = [item['count'] for item in daily_stats][-14:]
+    trend_labels = [item["date"].strftime("%m-%d") for item in daily_stats][-14:]
+    trend_data = [item["count"] for item in daily_stats][-14:]
 
     # =========================================================
-    # [Final] 컨텍스트 조립
+    # [Snapshot 저장] (핵심)
+    # =========================================================
+    snapshot = {
+        "persona": persona,
+        "ai_insight": ai_insight,
+        "total_count": completed_links.count(),
+
+        "tag_labels": tag_labels,
+        "tag_data": tag_data,
+        "cat_labels": cat_labels,
+        "cat_data": cat_data,
+        "trend_labels": trend_labels,
+        "trend_data": trend_data,
+    }
+
+    profile.stats_snapshot = snapshot
+    profile.stats_snapshot_updated_at = timezone.now()
+    profile.save(update_fields=["stats_snapshot", "stats_snapshot_updated_at"])
+
+    # =========================================================
+    # [템플릿 컨텍스트]
     # =========================================================
     context = {
-        'persona': persona,
-        'ai_insight': ai_insight,
-        'total_count': completed_links.count(),
-        
-        # JSON 직렬화 (Template에서 safe 필터 사용)
-        'tag_labels': json.dumps(tag_labels),
-        'tag_data': json.dumps(tag_data),
-        'cat_labels': json.dumps(cat_labels),
-        'cat_data': json.dumps(cat_data),
-        'trend_labels': json.dumps(trend_labels),
-        'trend_data': json.dumps(trend_data),
+        "persona": persona,
+        "ai_insight": ai_insight,
+        "total_count": snapshot["total_count"],
+
+        # 템플릿에서 JS 안전하게 쓰도록 JSON 문자열로
+        "tag_labels": json.dumps(tag_labels, ensure_ascii=False),
+        "tag_data": json.dumps(tag_data),
+        "cat_labels": json.dumps(cat_labels, ensure_ascii=False),
+        "cat_data": json.dumps(cat_data),
+        "trend_labels": json.dumps(trend_labels, ensure_ascii=False),
+        "trend_data": json.dumps(trend_data),
+
+        "snapshot_updated_at": profile.stats_snapshot_updated_at,
     }
-    
-    return render(request, 'links/partials/stats_content.html', context)
+
+    return render(request, "links/partials/stats_content.html", context)

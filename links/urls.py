@@ -36,4 +36,7 @@ urlpatterns = [
     path('stats/', views.stats_page, name='stats_page'),       # 껍데기 페이지
     path('stats/content/', views.stats_content, name='stats_content'), # 데이터 로딩용 (HTMX)
 
+    path("recommend/interest/", views.htmx_recommend_interest, name="htmx_recommend_interest"),
+    path("recommend/explore/", views.htmx_recommend_explore, name="htmx_recommend_explore"),
+
 ]

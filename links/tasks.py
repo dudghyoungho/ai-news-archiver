@@ -374,6 +374,7 @@ def recommend_articles_for_user(user_id: int):
                     title=cand["title"],
                     publisher="AI Recommend",
                     status="RECOMMENDED",
+                    recommendation_type="PERSONAL",
                     failed_reason=f"[Exploit] score={s:.4f} sim={sim:.4f} recency={r:.2f} kw={cand['keyword']}"
                 )
                 saved += 1
@@ -553,6 +554,7 @@ def recommend_exploratory_articles(user_id: int):
                     title=cand["title"],
                     publisher="AI Explore",
                     status="RECOMMENDED",
+                    recommendation_type="EXPLORE",
                     failed_reason=f"[Explore] score={s:.4f} sim={sim:.4f} recency={r:.2f} kw={cand['keyword']}"
                 )
                 saved += 1
