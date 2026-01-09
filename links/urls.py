@@ -1,42 +1,35 @@
 from django.urls import path
-from . import views  # views 모듈 전체 import (에러 방지)
+from . import views
 
 urlpatterns = [
     # ==============================
-    # 1. 화면 (HTML/HTMX) - 짧고 간결하게
+    # 1. 화면 (HTML/HTMX)
     # ==============================
-    
-    # 메인 페이지: localhost:8000/
     path('', views.index, name='index'),
-    
-    # HTMX 요청용: localhost:8000/create/
     path('create/', views.htmx_link_create, name='htmx_link_create'),
+    
+    # [삭제] accounts/ 경로는 config/urls.py에 있으므로 여기서 제거합니다.
+    # path('accounts/', include('django.contrib.auth.urls')), 
 
+    # 회원가입은 views.py에 만들었으므로 유지
+    path('signup/', views.SignUpView.as_view(), name='signup'),
 
     # ==============================
-    # 2. API (JSON) - /api/links/ 프리픽스 명시
+    # 2. 추천 및 통계
     # ==============================
-    
-    # DRF 생성: localhost:8000/api/links/create/
-    path('api/links/create/', views.LinkCreateView.as_view(), name='api_link_create'),
-    
-    # DRF 목록: localhost:8000/api/links/list/
-    path('api/links/list/', views.LinkListView.as_view(), name='api_link_list'),
-    
-    # DRF 상세: localhost:8000/api/links/1/
-    path('api/links/<int:link_id>/', views.LinkDetailView.as_view(), name='api_link_detail'),
-    
-    # DRF 재시도: localhost:8000/api/links/1/retry/
-    path('api/links/<int:link_id>/retry/', views.LinkRetryView.as_view(), name='api_link_retry'),
-
-    # [추가] 추천 기사 변환 및 리다이렉트 URL
     path('recommendation/<int:pk>/convert/', views.convert_recommendation, name='convert_recommendation'),
-
-    # 통계 페이지: localhost:8000/stats
-    path('stats/', views.stats_page, name='stats_page'),       # 껍데기 페이지
-    path('stats/content/', views.stats_content, name='stats_content'), # 데이터 로딩용 (HTMX)
-
+    path('stats/', views.stats_page, name='stats_page'),
+    path('stats/content/', views.stats_content, name='stats_content'),
     path("recommend/interest/", views.htmx_recommend_interest, name="htmx_recommend_interest"),
     path("recommend/explore/", views.htmx_recommend_explore, name="htmx_recommend_explore"),
 
+    # ==============================
+    # 3. API (JSON)
+    # ==============================
+    path('api/links/create/', views.LinkCreateView.as_view(), name='api_link_create'),
+    path('api/links/list/', views.LinkListView.as_view(), name='api_link_list'),
+    path('api/links/<int:link_id>/', views.LinkDetailView.as_view(), name='api_link_detail'),
+    path('api/links/<int:link_id>/retry/', views.LinkRetryView.as_view(), name='api_link_retry'),
+
+    path("api/whoami/", views.api_whoami, name="api_whoami"),
 ]

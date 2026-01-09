@@ -1,0 +1,37 @@
+{% extends 'links/base.html' %}
+
+{% block content %}
+<div class="flex justify-center items-center min-h-[60vh]">
+  <div class="w-full max-w-md bg-white p-8 rounded-lg shadow-lg border border-gray-100">
+    <h2 class="text-2xl font-bold mb-6 text-center text-gray-800">로그인</h2>
+    
+    <form method="post">
+      {% csrf_token %}
+      
+      {% if form.errors %}
+      <div class="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded border border-red-200">
+        아이디 또는 비밀번호가 올바르지 않습니다.
+      </div>
+      {% endif %}
+
+      <div class="mb-4">
+        <label class="block text-gray-700 text-sm font-bold mb-2">아이디</label>
+        <input type="text" name="username" class="w-full p-3 border border-gray-300 rounded focus:outline-none focus:border-blue-500" required autofocus>
+      </div>
+
+      <div class="mb-6">
+        <label class="block text-gray-700 text-sm font-bold mb-2">비밀번호</label>
+        <input type="password" name="password" class="w-full p-3 border border-gray-300 rounded focus:outline-none focus:border-blue-500" required>
+      </div>
+
+      <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded hover:bg-blue-700 transition duration-200">
+        로그인
+      </button>
+      
+      <div class="mt-4 text-center">
+        <a href="{% url 'signup' %}" class="text-sm text-blue-500 hover:underline">계정이 없으신가요? 회원가입</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

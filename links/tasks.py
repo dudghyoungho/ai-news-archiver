@@ -460,7 +460,8 @@ def recommend_exploratory_articles(user_id: int):
                     continue
 
                 # 최근 6개월 필터
-                if not is_within_six_months(item.get("pubDate", "")):
+                pub_raw = item.get("pubDate") or ""
+                if not is_within_six_months(pub_raw):
                     continue
 
                 clean_title = html.unescape(item.get("title", "")).replace("<b>", "").replace("</b>", "")

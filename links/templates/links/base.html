@@ -1,22 +1,119 @@
 <!DOCTYPE html>
 <html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>
+    document.body.addEventListener('htmx:beforeRequest', (e) => {
+      console.log('[HTMX beforeRequest]', e.detail.elt, e.detail.pathInfo);
+    });
+    document.body.addEventListener('htmx:afterRequest', (e) => {
+      console.log('[HTMX afterRequest]', e.detail.xhr.status, e.detail.pathInfo);
+    });
+    document.body.addEventListener('htmx:responseError', (e) => {
+      console.log('[HTMX responseError]', e.detail.xhr.status, e.detail.xhr.responseText);
+    });
+    document.body.addEventListener('htmx:sendError', (e) => {
+      console.log('[HTMX sendError]', e);
+    });
+  </script>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI News Archiver</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-  </head>
-  <body class="bg-gray-100 min-h-screen">
-    <div class="max-w-4xl mx-auto py-10 px-4">
-      <div class="mb-8 text-center">
-        <h1 class="text-4xl font-bold text-blue-600 mb-2">
-          Your New NewsPaper here!
-        </h1>
-        <p class="text-gray-600">My own news store that AI summarizes</p>
-      </div>
+    
+    <style>
+        /* 간단한 페이드인 애니메이션 */
+        .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
 
-      {% block content %} {% endblock %}
+    <nav class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="max-w-4xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-bold text-blue-600 hover:text-blue-800 transition">
+                        📰 AI News Archiver
+                    </a>
+                </div>
+
+                <div class="flex items-center gap-4">
+                    {% if user.is_authenticated %}
+                        <span class="text-gray-600 text-sm hidden sm:inline">
+                            반갑습니다, <b>{{ user.username }}</b>님
+                        </span>
+                        
+                        <form action="{% url 'logout' %}" method="post" class="inline">
+                            {% csrf_token %}
+                            <button type="submit" class="text-sm font-medium text-gray-500 hover:text-red-500 transition">
+                                로그아웃
+                            </button>
+                        </form>
+                    {% else %}
+                        <a href="{% url 'login' %}" class="text-sm font-bold text-gray-600 hover:text-blue-600 transition">
+                            로그인
+                        </a>
+                        <a href="{% url 'signup' %}" class="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition shadow-sm font-bold">
+                            회원가입
+                        </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-4xl mx-auto py-10 px-4 w-full flex-grow">
+        
+        <div class="mb-8 text-center animate-fade-in">
+            <h1 class="text-4xl font-bold text-gray-800 mb-2 tracking-tight">
+                Your New NewsPaper here!
+            </h1>
+            <p class="text-gray-500">AI가 요약하고 추천하는 나만의 뉴스 저장소</p>
+        </div>
+
+        {% if messages %}
+        <div class="mb-6 space-y-2">
+            {% for message in messages %}
+            <div class="p-4 rounded-lg text-sm font-medium shadow-sm animate-fade-in
+                {% if message.tags == 'error' %} bg-red-50 text-red-700 border border-red-200
+                {% elif message.tags == 'success' %} bg-green-50 text-green-700 border border-green-200
+                {% else %} bg-blue-50 text-blue-700 border border-blue-200 {% endif %}">
+                {{ message }}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% block content %} 
+        {% endblock %}
+        
     </div>
-  </body>
+
+    <footer class="bg-white border-t mt-auto py-6">
+        <div class="max-w-4xl mx-auto px-4 text-center text-gray-400 text-sm">
+            &copy; 2026 AI News Archiver. All rights reserved.
+        </div>
+    </footer>
+
+    <script>
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            event.detail.headers['X-CSRFToken'] = '{{ csrf_token }}';
+        });
+        function refreshLinkList() {
+          const el = document.querySelector('#link-list');
+          if (el) htmx.trigger(document.body, 'refresh-links');
+        }
+
+        function refreshLinkListAfter(ms = 5000) {
+          setTimeout(refreshLinkList, ms);
+        }
+
+        // 다른 탭 갔다가 돌아오면 자동 갱신 (추천 클릭 후 완료 반영에 특히 효과 큼)
+        window.addEventListener('focus', refreshLinkList);
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) refreshLinkList();
+        });
+    </script>
+</body>
 </html>

@@ -5,6 +5,9 @@ from datetime import timedelta
 from django.utils import timezone
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_POST
+from django.urls import reverse_lazy
+from django.views.generic import CreateView
+from django.contrib.auth.forms import UserCreationForm
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -13,9 +16,10 @@ from rest_framework.permissions import IsAuthenticated
 
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
-from rest_framework.authentication import BasicAuthentication
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 from django.db.models import Q
 
+from django.http import JsonResponse
 
 from collections import Counter
 from django.shortcuts import render
@@ -29,18 +33,17 @@ from .tasks import crawl_and_save_link, recommend_articles_for_user, recommend_e
 from .serializers import LinkSerializer
 from .utils import determine_persona, CATEGORY_KEYWORDS
 
+import logging
+logger = logging.getLogger(__name__)
 
 
 
-@method_decorator(csrf_exempt, name='dispatch')
+
 class LinkCreateView(APIView):
     """
-    사용자가 네이버 뉴스 URL을 저장하면:
-    1) Link 레코드를 PENDING으로 생성
-    2) Celery Task를 큐에 넣어 비동기 크롤링 시작
+    세션 로그인(웹 로그인)을 그대로 API 인증으로 사용
     """
-
-    authentication_classes = [BasicAuthentication]
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -48,14 +51,10 @@ class LinkCreateView(APIView):
         if not url:
             return Response({"detail": "url is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 최소한의 도메인 가드(완벽 검증은 crawler가 oid/aid 파싱하며 수행)
-        # 필요하면 더 엄격하게: n.news.naver.com / news.naver.com 만 허용
         if "naver.com" not in url:
             return Response({"detail": "Only Naver URLs are allowed"}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            # 같은 사용자가 같은 URL을 연속 저장하는 중복(완전한 중복 방지는 oid/aid 파싱 후 가능)
-            # 간단 가드: 같은 url이 PENDING/PROCESSING이면 기존 것을 재사용
             existing = (
                 Link.objects.select_for_update()
                 .filter(user=request.user, url=url, status__in=["PENDING", "PROCESSING"])
@@ -63,13 +62,8 @@ class LinkCreateView(APIView):
                 .first()
             )
             if existing:
-                # 이미 작업이 돌아가고 있으면 그 링크를 그대로 반환
                 return Response(
-                    {
-                        "id": existing.id,
-                        "status": existing.status,
-                        "message": "Already queued/processing",
-                    },
+                    {"id": existing.id, "status": existing.status, "message": "Already queued/processing"},
                     status=status.HTTP_200_OK,
                 )
 
@@ -81,13 +75,8 @@ class LinkCreateView(APIView):
                 retry_count=0,
             )
 
-        # 비동기 작업 큐잉
         crawl_and_save_link.delay(link.id)
-
-        return Response(
-            {"id": link.id, "status": link.status, "message": "Queued"},
-            status=status.HTTP_201_CREATED,
-        )
+        return Response({"id": link.id, "status": link.status, "message": "Queued"}, status=status.HTTP_201_CREATED)
 
 
 class LinkListView(APIView):
@@ -171,6 +160,17 @@ class LinkRetryView(APIView):
         crawl_and_save_link.delay(link.id)
         return Response({"id": link.id, "status": link.status, "message": "Re-queued"}, status=status.HTTP_200_OK)
     
+
+class SignUpView(CreateView):
+    """
+    회원가입 뷰: Django 내장 폼을 사용하여 유저 생성
+    성공 시 로그인 페이지로 이동
+    """
+    form_class = UserCreationForm
+    success_url = reverse_lazy('login') # 가입 성공 후 로그인 페이지로 이동
+    template_name = 'registration/signup.html'
+
+
 
 def get_link_context(user):
     """
@@ -258,7 +258,8 @@ def htmx_recommend_interest(request):
     """
     관심사 기반 추천 즉시 실행 (Celery 큐잉)
     """
-    recommend_articles_for_user.delay(request.user.id)
+    res = recommend_articles_for_user.delay(request.user.id)
+    logger.info(f"[HTMX] interest recommend queued user={request.user.id} task_id={res.id}")
 
     # 바로 UI를 갱신하고 싶으면, '대기중' 안내를 같이 보여주면 좋음
     context = get_link_context(request.user)
@@ -270,7 +271,8 @@ def htmx_recommend_explore(request):
     """
     탐험 추천 즉시 실행 (Celery 큐잉)
     """
-    recommend_exploratory_articles.delay(request.user.id)
+    res = recommend_exploratory_articles.delay(request.user.id)
+    logger.info(f"[HTMX] explore recommend queued user={request.user.id} task_id={res.id}")
 
     context = get_link_context(request.user)
     return render(request, "links/partials/link_list.html", context)
@@ -487,3 +489,12 @@ def stats_content(request):
     }
 
     return render(request, "links/partials/stats_content.html", context)
+
+
+@login_required
+def api_whoami(request):
+    return JsonResponse({
+        "id": request.user.id,
+        "username": request.user.username,
+        "is_superuser": request.user.is_superuser,
+    })

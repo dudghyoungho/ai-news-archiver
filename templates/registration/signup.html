@@ -1,0 +1,36 @@
+{% extends 'links/base.html' %}
+
+{% block content %}
+<div class="flex justify-center items-center min-h-[60vh]">
+  <div class="w-full max-w-md bg-white p-8 rounded-lg shadow-lg border border-gray-100">
+    <h2 class="text-2xl font-bold mb-6 text-center text-gray-800">회원가입</h2>
+    
+    <form method="post">
+      {% csrf_token %}
+      
+      {% for field in form %}
+      <div class="mb-4">
+        <label class="block text-gray-700 text-sm font-bold mb-2">{{ field.label }}</label>
+        <div class="p-2 border border-gray-300 rounded bg-gray-50">
+            {{ field }} 
+        </div>
+        {% if field.help_text %}
+        <p class="text-xs text-gray-500 mt-1">{{ field.help_text }}</p>
+        {% endif %}
+        {% for error in field.errors %}
+        <p class="text-xs text-red-500 mt-1">{{ error }}</p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+
+      <button type="submit" class="w-full bg-green-600 text-white font-bold py-3 px-4 rounded hover:bg-green-700 transition duration-200">
+        가입하기
+      </button>
+
+      <div class="mt-4 text-center">
+        <a href="{% url 'login' %}" class="text-sm text-blue-500 hover:underline">이미 계정이 있으신가요? 로그인</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

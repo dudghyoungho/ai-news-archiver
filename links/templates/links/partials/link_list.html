@@ -2,7 +2,7 @@
      class="space-y-4"
      hx-get="/"
      hx-select="#link-list"
-     {% if has_pending %}hx-trigger="every 2s"{% endif %}
+     hx-trigger="refresh-links from:body{% if has_pending %}, every 2s{% endif %}"
      hx-swap="outerHTML">
 
   {% for link in links %}

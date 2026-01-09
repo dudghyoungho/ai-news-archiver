@@ -21,9 +21,6 @@ NAVER_CLIENT_SECRET = getattr(settings, 'NAVER_CLIENT_SECRET', 'YOUR_CLIENT_SECR
 logger = logging.getLogger(__name__)
 
 
-# -----------------------------
-# Session (재사용 + Retry)
-# -----------------------------
 _SESSION: Optional[requests.Session] = None
 
 def get_session() -> requests.Session:
@@ -57,10 +54,6 @@ def get_session() -> requests.Session:
     _SESSION = session
     return session
 
-
-# -----------------------------
-# URL Parsing / Normalization
-# -----------------------------
 @dataclass
 class NaverNewsIdentity:
     oid: str
@@ -84,7 +77,6 @@ def parse_naver_ids_and_normalize_url(url: str) -> Optional[NaverNewsIdentity]:
         path = parsed.path or ""
         query = parse_qs(parsed.query)
 
-        # 1) query 기반: read.naver?oid=...&aid=...
         if "oid" in query and "aid" in query:
             oid = query["oid"][0]
             aid = query["aid"][0]
@@ -92,7 +84,6 @@ def parse_naver_ids_and_normalize_url(url: str) -> Optional[NaverNewsIdentity]:
                 normalized = f"https://n.news.naver.com/mnews/article/{oid}/{aid}"
                 return NaverNewsIdentity(oid=oid, aid=aid, normalized_url=normalized)
 
-        # 2) path 기반: /mnews/article/{oid}/{aid} 또는 /article/{oid}/{aid}
         m = re.search(r"/(?:mnews/)?article/(?P<oid>\d{3,})/(?P<aid>\d{5,})", path)
         if m:
             oid = m.group("oid")
@@ -100,8 +91,6 @@ def parse_naver_ids_and_normalize_url(url: str) -> Optional[NaverNewsIdentity]:
             normalized = f"https://n.news.naver.com/mnews/article/{oid}/{aid}"
             return NaverNewsIdentity(oid=oid, aid=aid, normalized_url=normalized)
 
-        # 3) 혹시라도 /read?oid=...&aid=... 같은 변형이 있을 수 있어 대비 (느슨)
-        #    (원칙적으로 위에서 대부분 잡힘)
         m2 = re.search(r"oid=(\d+).*aid=(\d+)", parsed.query)
         if m2:
             oid, aid = m2.group(1), m2.group(2)
@@ -114,15 +103,11 @@ def parse_naver_ids_and_normalize_url(url: str) -> Optional[NaverNewsIdentity]:
     except Exception:
         return None
 
-
-# -----------------------------
-# Published At Parsing
-# -----------------------------
 def parse_iso_datetime(value: str) -> Optional[datetime]:
     """
-    ISO-8601 유사 문자열을 파싱.
+    유사 문자열을 파싱.
     - 'Z' 처리
-    - timezone-aware 변환 (가능하면)
+    - timezone-aware 변환
     """
     if not value:
         return None
@@ -440,40 +425,63 @@ def get_naver_news_info(url: str) -> Dict[str, Any]:
 
 
 
-def search_naver_news(keyword, display=20):
-    """
-    네이버 뉴스 검색 API를 사용하여 관련 기사 목록을 가져옵니다.
-    """
-    encText = urllib.parse.quote(keyword)
-    url = f"https://openapi.naver.com/v1/search/news?query={encText}&display={display}&sort=sim"
+import urllib.parse
+import urllib.request
+import json
+import logging
+import html as ihtml
+
+logger = logging.getLogger(__name__)
+
+def search_naver_news(keyword, display=20, sort="sim"):
+    keyword = (keyword or "").strip()
+    if not keyword:
+        logger.warning("[search_naver_news] empty keyword")
+        return []
+
+    # ✅ 핵심: 키가 None/빈문자열이면 여기서 바로 종료 (헤더 None 방지)
+    cid = (NAVER_CLIENT_ID or "").strip()
+    csec = (NAVER_CLIENT_SECRET or "").strip()
+
+    logger.warning(
+        "[search_naver_news] keyword=%r cid_len=%s csec_len=%s",
+        keyword,
+        len(cid),
+        len(csec),
+    )
+
+    if not cid or not csec:
+        logger.error("[search_naver_news] NAVER API keys missing (cid/csec empty)")
+        return []
+
+    enc = urllib.parse.quote(keyword)
+    url = f"https://openapi.naver.com/v1/search/news?query={enc}&display={display}&sort={sort}"
 
     try:
-        request = urllib.request.Request(url)
-        request.add_header("X-Naver-Client-Id", NAVER_CLIENT_ID)
-        request.add_header("X-Naver-Client-Secret", NAVER_CLIENT_SECRET)
-        
-        response = urllib.request.urlopen(request)
-        res_code = response.getcode()
+        req = urllib.request.Request(url)
+        req.add_header("X-Naver-Client-Id", cid)
+        req.add_header("X-Naver-Client-Secret", csec)
 
-        if res_code == 200:
-            response_body = response.read()
-            data = json.loads(response_body.decode('utf-8'))
-            
-            # 우리가 필요한 형태로 데이터 정제
-            results = []
-            for item in data.get('items', []):
-                results.append({
-                    "title": item['title'].replace('<b>', '').replace('</b>', ''), # 강조 태그 제거
-                    "originallink": item['originallink'], # 원본 URL
-                    "link": item['link'], # 네이버 뉴스 URL (있으면 우선 사용)
-                    "description": item['description'].replace('<b>', '').replace('</b>', ''),
-                    "pubDate": item['pubDate']
-                })
-            return results
-        else:
-            logging.error(f"[search_naver_news] Error Code: {res_code}")
-            return []
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.getcode() != 200:
+                logger.error(f"[search_naver_news] Error Code: {resp.getcode()}")
+                return []
+            data = json.loads(resp.read().decode("utf-8"))
+
+        results = []
+        for item in data.get("items") or []:
+            title = ihtml.unescape((item.get("title") or "")).replace("<b>", "").replace("</b>", "").strip()
+            desc  = ihtml.unescape((item.get("description") or "")).replace("<b>", "").replace("</b>", "").strip()
+            results.append({
+                "title": title,
+                "originallink": item.get("originallink") or "",
+                "link": item.get("link") or "",
+                "description": desc,
+                "pubDate": item.get("pubDate") or "",
+            })
+
+        return results
 
     except Exception as e:
-        logging.error(f"[search_naver_news] Exception: {e}")
+        logger.error(f"[search_naver_news] Exception: {e}", exc_info=True)
         return []

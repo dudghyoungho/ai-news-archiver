@@ -1,67 +1,40 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="UTF-8" />
+<head>
+    <meta charset="UTF-8">
     <style>
-      body {
-        width: 300px;
-        padding: 15px;
-        font-family: sans-serif;
-      }
-      h3 {
-        margin-top: 0;
-        color: #333;
-      }
-      input {
-        width: 100%;
-        padding: 8px;
-        margin-bottom: 10px;
-        box-sizing: border-box;
-      }
-      button {
-        width: 100%;
-        padding: 10px;
-        background-color: #2563eb;
-        color: white;
-        border: none;
-        cursor: pointer;
-        border-radius: 4px;
-        font-weight: bold;
-      }
-      button:hover {
-        background-color: #1d4ed8;
-      }
-      #status {
-        margin-top: 10px;
-        font-size: 12px;
-        color: #666;
-      }
-      .hidden {
-        display: none;
-      }
+        body { width: 320px; padding: 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .btn { width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; margin-bottom: 8px; }
+        .btn-primary { background-color: #2563eb; color: white; }
+        .btn-primary:hover { background-color: #1d4ed8; }
+        .btn-secondary { background-color: #f3f4f6; color: #374151; }
+        .btn-secondary:hover { background-color: #e5e7eb; }
+        .hidden { display: none; }
+        .status { margin-top: 10px; font-size: 12px; color: #666; text-align: center; }
+        h3 { margin-top: 0; text-align: center; color: #1e3a8a; }
     </style>
-  </head>
-  <body>
-    <h3>AI 뉴스 요약 저장</h3>
+</head>
+<body>
+    <h3>📰 AI News Archiver</h3>
 
     <div id="login-section">
-      <input type="text" id="username" placeholder="아이디" />
-      <input type="password" id="password" placeholder="비밀번호" />
-      <button id="btn-login">로그인</button>
+        <p style="text-align: center; font-size: 13px; color: #666; margin-bottom: 15px;">
+            로그인이 필요합니다.
+        </p>
+        <button id="btn-go-web" class="btn btn-primary">웹사이트에서 로그인하기</button>
     </div>
 
     <div id="save-section" class="hidden">
-      <p
-        id="current-url"
-        style="word-break: break-all; font-size: 11px; color: #888"
-      ></p>
-      <button id="btn-save">현재 페이지 저장 및 요약</button>
-      <button id="btn-logout" style="background-color: #999; margin-top: 5px">
-        로그아웃
-      </button>
+        <p id="user-info" style="text-align: center; font-size: 13px; color: #059669; font-weight: bold; margin-bottom: 10px;">
+            ✅ 로그인됨
+        </p>
+        <p id="current-url" style="word-break: break-all; font-size: 11px; color: #888; background: #f9fafb; padding: 5px; border-radius: 4px; margin-bottom: 15px;"></p>
+        
+        <button id="btn-save" class="btn btn-primary">지금 보고 있는 뉴스 저장</button>
+        <button id="btn-open-web" class="btn btn-secondary">내 보관함 열기</button>
     </div>
 
-    <div id="status"></div>
+    <div id="status" class="status"></div>
     <script src="popup.js"></script>
-  </body>
+</body>
 </html>
