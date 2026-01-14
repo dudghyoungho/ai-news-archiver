@@ -31,31 +31,25 @@ class Link(models.Model):
     naver_aid = models.CharField(max_length=20, blank=True, null=True)
 
     title = models.CharField(max_length=200, blank=True)
-    content = models.TextField(blank=True)       # 본문 (정제된 텍스트)
-    summary = models.TextField(blank=True)       # AI 3줄 요약
-    # Postgres의 JSONField + Gin Index 활용 예정
+    content = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
     tags = models.JSONField(default=list, blank=True) 
 
-    # 추천 시스템을 위한 벡터 필드 (1536차원)
     embedding = VectorField(dimensions=1536, null=True, blank=True)
 
+    publisher = models.CharField(max_length=50, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    section = models.CharField(max_length=20, blank=True)
+    image_url = models.URLField(max_length=500, blank=True, null=True) 
 
-    # 3. 메타 데이터 (분석용)
-    publisher = models.CharField(max_length=50, blank=True) # 언론사 (예: 연합뉴스)
-    published_at = models.DateTimeField(null=True, blank=True) # 기사 발행일
-    section = models.CharField(max_length=20, blank=True) # 섹션 (IT, 경제 등)
-    image_url = models.URLField(max_length=500, blank=True, null=True)
-
-    # 4. 운영 및 에러 핸들링 (Reliability 핵심 ⭐)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
-    failed_reason = models.TextField(blank=True) # 에러 메시지 저장
-    retry_count = models.PositiveSmallIntegerField(default=0) # 재시도 횟수
+    failed_reason = models.TextField(blank=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        # User별로 같은 기사(oid, aid)는 중복 저장 불가 (DB 레벨 방어)
         constraints = [
             models.UniqueConstraint(
                 fields=['user', 'naver_oid', 'naver_aid'], 
@@ -67,7 +61,6 @@ class Link(models.Model):
         return f"[{self.publisher}] {self.title}" if self.title else self.url
     
     def save(self, *args, **kwargs):
-        # 네이버 뉴스가 아닌데 추천/완료 상태가 되려고 하면 막음 (디버깅용)
         if self.status in ['RECOMMENDED', 'COMPLETED'] and "naver.com" not in self.url:
             raise ValueError("AI 요약은 네이버 뉴스 URL만 가능합니다.")
         super().save(*args, **kwargs)
@@ -75,20 +68,14 @@ class Link(models.Model):
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-    # 사용자의 평균 관심사 벡터 (기사 벡터와 동일한 1536차원)
     interest_vector = VectorField(dimensions=1536, null=True, blank=True)
-    
-    # 마지막으로 벡터가 업데이트된 시각 (Time-Decay 계산용)
     last_updated = models.DateTimeField(auto_now=True)
-
     stats_snapshot = models.JSONField(default=dict, blank=True)
     stats_snapshot_updated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.username}'s Profile"
 
-# (참고) User 생성 시 자동으로 Profile이 생기도록 Signal을 설정하는 것이 좋습니다.
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 

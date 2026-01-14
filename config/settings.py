@@ -166,12 +166,23 @@ SIMPLE_JWT = {
 # 개발 편의를 위해 모든 도메인 허용 (배포 시 보안 강화 필요)
 CORS_ALLOW_ALL_ORIGINS = True 
 
+# [수정 포인트 1] AWS IP나 도메인이 추가되어야 함
+# .env에서 'http://13.124.x.x,http://mydomain.com' 형태로 받아오거나,
+# ALLOWED_HOSTS를 기반으로 자동 생성하도록 설정
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:8000',
     'http://127.0.0.1:8000',
-    # 크롬 익스텐션 ID (필수)
     'chrome-extension://kcimckmkkbnlleakaibncopaalgndomn', 
 ]
+
+# .env에 CSRF_TRUSTED_HOSTS 변수가 있다면 추가 (AWS 배포 시 유용)
+if os.environ.get('CSRF_TRUSTED_HOSTS'):
+    CSRF_TRUSTED_ORIGINS.extend(os.environ.get('CSRF_TRUSTED_HOSTS').split(','))
+
+
+# [수정 포인트 2] Nginx 배포 시 필수 설정 (헤더 신뢰)
+# Nginx가 HTTPS 요청을 받아서 Django에게 넘겨줄 때 필요한 설정
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 # ==========================================

@@ -1,28 +1,28 @@
-const API_BASE_URL = "http://localhost:8000"; // 배포 시 실제 주소로 변경
+const API_BASE_URL = "http://43.203.231.70"; // temporaily set to localhost, change to real address after publish through AWS
 
 document.addEventListener("DOMContentLoaded", async () => {
-    // 1. HTML 요소 가져오기 (오타 방지)
+    //bring HTML components to variants
     const loginSection = document.getElementById("login-section");
     const saveSection = document.getElementById("save-section");
     const statusDiv = document.getElementById("status");
     const urlDisplay = document.getElementById("current-url");
     const userInfo = document.getElementById("user-info");
 
-    // 버튼 요소 가져오기
+    // bring button components to variants
     const btnGoWeb = document.getElementById("btn-go-web");
     const btnOpenWeb = document.getElementById("btn-open-web");
     const btnSave = document.getElementById("btn-save");
 
-    // 2. 초기 상태 확인 (쿠키 체크)
+    // 2. initial state check, with cookies
     try {
         const session = await getAuthCookies();
-        console.log("Cookie Check:", JSON.stringify(session, null, 2)); // 디버깅용 로그
+        console.log("Cookie Check:", JSON.stringify(session, null, 2)); // logged for debuging
 
         const who = await fetch(`${API_BASE_URL}/api/whoami/`, { credentials: "include" });
         console.log("whoami status:", who.status, await who.text());
 
         if (session.sessionid) {
-            // 세션 ID가 있으면 로그인된 상태
+            // if there is a session ID, it's state is 'logged in'
             showSaveSection();
         } else {
             showLoginSection();
@@ -33,10 +33,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     // =========================================
-    // 3. 이벤트 리스너 연결 (안전장치 추가)
+    // 3. connecting event listener. (안전장치 추가)
     // =========================================
 
-    // [로그인 버튼] 웹사이트 로그인 페이지 열기
+    // btn-go-web : login button. open website login page.
     if (btnGoWeb) {
         btnGoWeb.addEventListener("click", () => {
             chrome.tabs.create({ url: `${API_BASE_URL}/accounts/login/` });
@@ -45,14 +45,14 @@ document.addEventListener("DOMContentLoaded", async () => {
         console.error("❌ 'btn-go-web' 버튼을 찾을 수 없습니다.");
     }
 
-    // [보관함 버튼] 메인 페이지 열기
+    // open main page
     if (btnOpenWeb) {
         btnOpenWeb.addEventListener("click", () => {
             chrome.tabs.create({ url: API_BASE_URL });
         });
     }
 
-    // [저장 버튼] 핵심 기능
+    // (Save Button. the key implemetation)
     if (btnSave) {
         btnSave.addEventListener("click", async () => {
             statusDiv.textContent = "⏳ 저장 및 분석 중...";

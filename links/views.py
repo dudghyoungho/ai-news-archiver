@@ -1,4 +1,6 @@
 import json
+import logging
+
 from django.shortcuts import get_object_or_404, render, redirect
 from django.db import transaction
 from datetime import timedelta
@@ -25,24 +27,19 @@ from collections import Counter
 from django.shortcuts import render
 from django.db.models import Count
 from django.db.models.functions import TruncDate
-from pgvector.django import CosineDistance # 임포트 확인
-from .ai import analyze_user_interest # 임포트 추가
+from pgvector.django import CosineDistance
+from .ai import analyze_user_interest
 
 from .models import Link, UserProfile
 from .tasks import crawl_and_save_link, recommend_articles_for_user, recommend_exploratory_articles
 from .serializers import LinkSerializer
 from .utils import determine_persona, CATEGORY_KEYWORDS
 
-import logging
 logger = logging.getLogger(__name__)
 
 
 
-
 class LinkCreateView(APIView):
-    """
-    세션 로그인(웹 로그인)을 그대로 API 인증으로 사용
-    """
     authentication_classes = [SessionAuthentication, BasicAuthentication]
     permission_classes = [IsAuthenticated]
 
@@ -80,13 +77,6 @@ class LinkCreateView(APIView):
 
 
 class LinkListView(APIView):
-    """
-    로그인한 사용자의 링크 목록 조회
-    쿼리 파라미터:
-      - status=PENDING|PROCESSING|COMPLETED|FAILED|PARTIAL
-      - q=검색어(제목/언론사/요약/본문 일부 검색 - 간단 contains)
-      - ordering=created_at|published_at (기본: -created_at)
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -119,40 +109,28 @@ class LinkListView(APIView):
 
 
 class LinkDetailView(APIView):
-    """
-    단건 조회
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, link_id: int):
         link = get_object_or_404(Link, id=link_id, user=request.user)
-        # 수동 매핑 대신 시리얼라이저 사용
         serializer = LinkSerializer(link) 
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class LinkRetryView(APIView):
-    """
-    FAILED / PARTIAL 링크를 사용자가 재시도할 수 있게 하는 엔드포인트.
-    - FAILED: 크롤링 재시도
-    - PARTIAL: 본문/메타 보강 시도(정책상 허용하면)
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, link_id: int):
         with transaction.atomic():
             link = get_object_or_404(Link.objects.select_for_update(), id=link_id, user=request.user)
 
-            # 처리 중이면 재시도 금지
             if link.status == "PROCESSING":
                 return Response({"detail": "Already processing"}, status=status.HTTP_409_CONFLICT)
 
-            # 재시도 가능한 상태만 허용
             if link.status not in ("FAILED", "PARTIAL", "PENDING"):
                 return Response({"detail": f"Retry not allowed for status={link.status}"},
                                 status=status.HTTP_400_BAD_REQUEST)
 
-            # 상태 리셋
             link.status = "PENDING"
             link.failed_reason = ""
             link.save(update_fields=["status", "failed_reason", "updated_at"])
@@ -167,18 +145,12 @@ class SignUpView(CreateView):
     성공 시 로그인 페이지로 이동
     """
     form_class = UserCreationForm
-    success_url = reverse_lazy('login') # 가입 성공 후 로그인 페이지로 이동
+    success_url = reverse_lazy('login')
     template_name = 'registration/signup.html'
 
 
 
 def get_link_context(user):
-    """
-    공통 로직: 사용자가 봐야 할 의미 있는 링크(완료됨 + 추천됨)와
-    현재 서버에서 처리 중인 상태를 통합 관리합니다.
-    """
-
-    # 10분 이상 PROCESSING이면 비정상으로 보고 FAILED 처리
     stale_cutoff = timezone.now() - timedelta(minutes=10)
     Link.objects.filter(
         user=user,
@@ -186,20 +158,17 @@ def get_link_context(user):
         updated_at__lt=stale_cutoff
     ).update(status='FAILED', failed_reason='STALE_PROCESSING_TIMEOUT')
 
-    # PENDING도 너무 오래되면 FAILED 처리(선택)
     Link.objects.filter(
         user=user,
         status='PENDING',
         updated_at__lt=stale_cutoff
     ).update(status='FAILED', failed_reason='STALE_PENDING_TIMEOUT')
 
-    # [수정] 사용자가 화면에서 봐야 할 기사들만 필터링
     links = Link.objects.filter(
         user=user,
         status__in=['COMPLETED', 'RECOMMENDED', 'FAILED', 'PARTIAL']
     ).order_by('-created_at')
     
-    # 처리 중인 건 확인
     has_pending = Link.objects.filter(
         user=user,
         status__in=['PENDING', 'PROCESSING']
@@ -219,15 +188,10 @@ def htmx_link_create(request):
     """
     url = request.POST.get('url', '').strip()
 
-    # 1. 유효성 검사 (간단 버전)
     if not url or "naver.com" not in url:
-        # 에러 시 사용자에게 알림을 주고 싶다면 여기서 에러 메시지가 포함된 HTML을 줄 수도 있음
-        # 일단은 무시하고 현재 리스트 반환 (또는 Htmx Response Header로 트리거 가능)
         pass 
     else:
-        # 2. 저장 로직 (LinkCreateView의 로직을 재사용)
         with transaction.atomic():
-            # 중복 방지 로직
             existing = (
                 Link.objects.select_for_update()
                 .filter(user=request.user, url=url, status__in=["PENDING", "PROCESSING"])
@@ -243,12 +207,9 @@ def htmx_link_create(request):
                     failed_reason="",
                     retry_count=0,
                 )
-                # 3. 비동기 크롤링 시작
                 crawl_and_save_link.delay(link.id)
 
-    # 4. 저장 완료 후 '최신 리스트'를 다시 조회
     context = get_link_context(request.user)
-    # 5. 리스트 HTML 조각만 렌더링해서 반환 (HTMX가 이걸 받아서 갈아끼움)
     return render(request, 'links/partials/link_list.html', context)
 
 
@@ -260,8 +221,6 @@ def htmx_recommend_interest(request):
     """
     res = recommend_articles_for_user.delay(request.user.id)
     logger.info(f"[HTMX] interest recommend queued user={request.user.id} task_id={res.id}")
-
-    # 바로 UI를 갱신하고 싶으면, '대기중' 안내를 같이 보여주면 좋음
     context = get_link_context(request.user)
     return render(request, "links/partials/link_list.html", context)
 
@@ -279,27 +238,22 @@ def htmx_recommend_explore(request):
 
 @login_required
 def index(request):
-    # 1. 공통 컨텍스트 가져오기 (이미 필터링된 links가 들어있음)
     context = get_link_context(request.user)
     links = context['links']
-
-    # 2. 태그 통계 계산 (이미 가져온 links 활용)
     all_tags = []
     for link in links:
-        if link.status == 'COMPLETED' and link.tags: # 통계는 읽은 기사로만
+        if link.status == 'COMPLETED' and link.tags:
             all_tags.extend(link.tags)
     
     tag_counts = Counter(all_tags).most_common(5)
     chart_labels = [tag for tag, count in tag_counts]
     chart_data = [count for tag, count in tag_counts]
 
-    # 컨텍스트 업데이트
     context.update({
         'chart_labels': chart_labels,
         'chart_data': chart_data,
     })
     
-    # 3. HTMX 요청 분기 처리
     if request.headers.get('HX-Request'):
         return render(request, 'links/partials/link_list.html', context)
     
@@ -307,50 +261,29 @@ def index(request):
 
 
 def convert_recommendation(request, pk):
-    """
-    추천 기사를 클릭했을 때 실행되는 중간 경유 뷰.
-    1. 상태를 RECOMMENDED -> PENDING으로 변경
-    2. 크롤링/요약 태스크 트리거 (비동기)
-    3. 실제 기사 URL로 리다이렉트
-    """
-    # 내 소유의 링크인지 확인하며 가져오기
     link = get_object_or_404(Link, pk=pk, user=request.user)
     
-    # 이미 완료된 게 아니라면, 크롤링 시작
     if link.status == 'RECOMMENDED':
         link.status = 'PENDING'
         link.save(update_fields=['status'])
         
-        # 비동기 작업 시작 (Celery)
         crawl_and_save_link.delay(link.id)
-    
-    # 사용자에게는 원래 가려던 뉴스 페이지를 보여줌
     return redirect(link.url)
 
 @login_required
 def stats_page(request):
-    """
-    스냅샷 기반 '껍데기' 페이지.
-    - 여기서는 절대 GPT/통계 계산을 하지 않음
-    - 저장된 snapshot이 있으면 그것을 렌더
-    - 없으면 empty 화면
-    """
     user = request.user
-
-    # 프로필 보장
     profile, _ = UserProfile.objects.get_or_create(user=user)
 
     snapshot = profile.stats_snapshot or {}
     has_snapshot = bool(snapshot) and snapshot.get("total_count", 0) > 0
 
     if not has_snapshot:
-        # 아직 snapshot이 없다면 빈 화면(안내) 렌더
         return render(request, "links/stats.html", {
             "has_snapshot": False,
             "snapshot_updated_at": profile.stats_snapshot_updated_at,
         })
 
-    # snapshot을 stats_content.html이 기대하는 변수명으로 매핑해서 전달
     context = {
         "has_snapshot": True,
         "snapshot_updated_at": profile.stats_snapshot_updated_at,
@@ -359,7 +292,6 @@ def stats_page(request):
         "ai_insight": snapshot.get("ai_insight"),
         "total_count": snapshot.get("total_count", 0),
 
-        # 아래 값들은 템플릿에서 JS로 읽기 쉽도록 JSON 문자열로 유지
         "tag_labels": json.dumps(snapshot.get("tag_labels", []), ensure_ascii=False),
         "tag_data": json.dumps(snapshot.get("tag_data", [])),
         "cat_labels": json.dumps(snapshot.get("cat_labels", []), ensure_ascii=False),
@@ -368,8 +300,6 @@ def stats_page(request):
         "trend_data": json.dumps(snapshot.get("trend_data", [])),
     }
 
-    # stats.html 안에서 partial include로 렌더하는 구조라면
-    # stats.html이 context를 그대로 받아야 함
     return render(request, "links/stats.html", context)
 
 
@@ -384,17 +314,11 @@ def stats_content(request):
     user = request.user
     profile, _ = UserProfile.objects.get_or_create(user=user)
 
-    # 1) 읽은 기사
     completed_links = Link.objects.filter(user=user, status="COMPLETED")
 
     if not completed_links.exists():
-        # snapshot도 비워두고 updated_at도 갱신하지 않음(원하면 초기화 가능)
         return render(request, "links/partials/stats_empty.html")
 
-    # =========================================================
-    # [Logic 1] AI 지식 브리핑 (선택)
-    # - 핵심: stats_content에서만 호출됨
-    # =========================================================
     ai_insight = None
     if profile.interest_vector is not None:
         closest_links = (
@@ -410,15 +334,8 @@ def stats_content(request):
                 logger.warning(f"[stats_content] analyze_user_interest error user={user.id}: {e}")
                 ai_insight = None
 
-    # =========================================================
-    # [Logic 2] 페르소나
-    # =========================================================
     persona = determine_persona(completed_links)
 
-    # =========================================================
-    # [Logic 3] 차트 데이터
-    # =========================================================
-    # 3-1. 태그 (Bar)
     all_tags = []
     for link in completed_links:
         if link.tags:
@@ -428,7 +345,6 @@ def stats_content(request):
     tag_labels = [tag for tag, count in tag_counts]
     tag_data = [count for tag, count in tag_counts]
 
-    # 3-2. 카테고리 (Radar)
     cat_scores = {k: 0 for k in CATEGORY_KEYWORDS.keys()}
     for tag in all_tags:
         for cat, keywords in CATEGORY_KEYWORDS.items():
@@ -438,7 +354,6 @@ def stats_content(request):
     cat_labels = list(cat_scores.keys())
     cat_data = list(cat_scores.values())
 
-    # 3-3. 추이 (Line) - 최근 14일
     daily_stats = (
         completed_links
         .annotate(date=TruncDate("created_at"))
@@ -449,9 +364,6 @@ def stats_content(request):
     trend_labels = [item["date"].strftime("%m-%d") for item in daily_stats][-14:]
     trend_data = [item["count"] for item in daily_stats][-14:]
 
-    # =========================================================
-    # [Snapshot 저장] (핵심)
-    # =========================================================
     snapshot = {
         "persona": persona,
         "ai_insight": ai_insight,
@@ -469,15 +381,11 @@ def stats_content(request):
     profile.stats_snapshot_updated_at = timezone.now()
     profile.save(update_fields=["stats_snapshot", "stats_snapshot_updated_at"])
 
-    # =========================================================
-    # [템플릿 컨텍스트]
-    # =========================================================
     context = {
         "persona": persona,
         "ai_insight": ai_insight,
         "total_count": snapshot["total_count"],
 
-        # 템플릿에서 JS 안전하게 쓰도록 JSON 문자열로
         "tag_labels": json.dumps(tag_labels, ensure_ascii=False),
         "tag_data": json.dumps(tag_data),
         "cat_labels": json.dumps(cat_labels, ensure_ascii=False),
