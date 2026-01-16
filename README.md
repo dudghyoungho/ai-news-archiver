@@ -65,4 +65,30 @@ Solution: Configured 2GB Swap Memory and optimized Gunicorn/Celery concurrency s
 
 3. Hybrid Authentication
 Problem: The web app uses Session Auth, but the Chrome Extension requires Token Auth.
+
 Solution: Designed a dual-auth system. Used drf-spectacular for API documentation and configured Django to handle SessionAuthentication for browsers and JWTAuthentication for the extension simultaneously.
+
+
+🛠️ How to Run (Local)
+Prerequisites: Docker & Docker Compose
+
+# 1. Clone the repository
+git clone [https://github.com/YOUR_GITHUB_ID/ai-news-archiver.git](https://github.com/YOUR_GITHUB_ID/ai-news-archiver.git)
+
+# 2. Create .env file
+# (Copy .env.example and fill in your API keys)
+cp .env.example .env
+
+# 3. Build and Run with Docker
+docker-compose up -d --build
+
+# 4. Access the app
+# Web: http://localhost:8000
+
+
+👨‍💻 Author
+Youngho Shin * Backend Developer aspiring to build scalable systems.
+
+📧 Email: younghoshin2001@gmail.com
+
+💼 LinkedIn: linkedin.com/in/youngho-shin-dev
