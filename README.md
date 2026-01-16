@@ -72,18 +72,18 @@ Solution: Designed a dual-auth system. Used drf-spectacular for API documentatio
 🛠️ How to Run (Local)
 Prerequisites: Docker & Docker Compose
 
-# 1. Clone the repository
+1. Clone the repository
 git clone [https://github.com/YOUR_GITHUB_ID/ai-news-archiver.git](https://github.com/YOUR_GITHUB_ID/ai-news-archiver.git)
 
-# 2. Create .env file
-# (Copy .env.example and fill in your API keys)
+2. Create .env file
+(Copy .env.example and fill in your API keys)
 cp .env.example .env
 
-# 3. Build and Run with Docker
+3. Build and Run with Docker
 docker-compose up -d --build
 
-# 4. Access the app
-# Web: http://localhost:8000
+4. Access the app
+Web: http://localhost:8000
 
 
 👨‍💻 Author
