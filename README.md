@@ -36,12 +36,12 @@ This project adopts a **Micro-service oriented Monolith** architecture to ensure
 
 ```mermaid
 graph TD
-    Client[Client (Web/Extension)] -->|HTTP Request| Nginx
-    Nginx -->|Reverse Proxy| Web(Django + Gunicorn)
+    Client["Client (Web/Extension)"] -->|HTTP Request| Nginx
+    Nginx -->|Reverse Proxy| Web["Web (Django + Gunicorn)"]
     
     subgraph Docker Network
         Web -->|Task Push| Redis
-        Web -->|Read/Write| DB[(PostgreSQL + pgvector)]
+        Web -->|Read/Write| DB[("PostgreSQL + pgvector")]
         
         Worker[Celery Worker] -->|Task Pop| Redis
         Worker -->|Save Result| DB
