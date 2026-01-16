@@ -49,27 +49,26 @@ graph TD
     end
 ```
 
-## Infrastructure
+## 🧱 Infrastructure
 * Containerization: Fully Dockerized environment (Web, Worker, Nginx, DB, Redis) ensuring consistency between Local and Production.
 * Cloud Deployment: Hosted on AWS Lightsail ($7/mo) using Swap memory optimization to handle AI workloads on 1GB RAM.
 * CI/CD: Automated deployment pipeline via GitHub Actions (Planned).
 
-💡 Technical Challenges & Solutions
+## 💡 Technical Challenges & Solutions
 1. Handling Latency in AI Requests
-Problem: OpenAI API calls take 3-5 seconds, causing browser timeout and bad UX.
-Solution: Implemented an Event-Driven Architecture using Celery. The request is acknowledged immediately (200 OK), and the heavy lifting happens in the background. The UI updates in real-time using HTMX polling.
+* Problem: OpenAI API calls take 3-5 seconds, causing browser timeout and bad UX.
+* Solution: Implemented an Event-Driven Architecture using Celery. The request is acknowledged immediately (200 OK), and the heavy lifting happens in the background. The UI updates in real-time using HTMX polling.
 
 2. Low-Resource Optimization
-Problem: Running 5 containers (including AI workers) on a 1GB RAM instance led to OOM (Out of Memory) kills.
-Solution: Configured 2GB Swap Memory and optimized Gunicorn/Celery concurrency settings based on available resources, achieving 99.9% uptime.
+* Problem: Running 5 containers (including AI workers) on a 1GB RAM instance led to OOM (Out of Memory) kills.
+* Solution: Configured 2GB Swap Memory and optimized Gunicorn/Celery concurrency settings based on available resources, achieving 99.9% uptime.
 
 3. Hybrid Authentication
-Problem: The web app uses Session Auth, but the Chrome Extension requires Token Auth.
+* Problem: The web app uses Session Auth, but the Chrome Extension requires Token Auth.
+* Solution: Designed a dual-auth system. Used drf-spectacular for API documentation and configured Django to handle SessionAuthentication for browsers and JWTAuthentication for the extension simultaneously.
 
-Solution: Designed a dual-auth system. Used drf-spectacular for API documentation and configured Django to handle SessionAuthentication for browsers and JWTAuthentication for the extension simultaneously.
 
-
-🛠️ How to Run (Local)
+## 🛠️ How to Run (Local)
 Prerequisites: Docker & Docker Compose
 
 1. Clone the repository
@@ -86,9 +85,7 @@ docker-compose up -d --build
 Web: http://localhost:8000
 
 
-👨‍💻 Author
+## 👨‍💻 Author
 Youngho Shin * Backend Developer aspiring to build scalable systems.
-
 📧 Email: younghoshin2001@gmail.com
-
 💼 LinkedIn: linkedin.com/in/youngho-shin-dev
