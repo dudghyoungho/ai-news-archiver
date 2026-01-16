@@ -1,4 +1,4 @@
-# 🤖 Smart Link Archiver (AI-Powered News Platform)
+# Smart Link Archiver (AI-Powered News Platform)
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
 ![Django](https://img.shields.io/badge/Django-5.0-092E20?logo=django&logoColor=white)
@@ -11,7 +11,7 @@
 
 ---
 
-## 📸 Demo & Screenshots
+## Demo & Screenshots
 
 | **Web Dashboard** | **Chrome Extension** |
 |:---:|:---:|
@@ -20,17 +20,17 @@
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
-* **📰 AI-Powered Summarization:** Automatically summarizes news content using OpenAI API.
-* **⚡ Asynchronous Processing:** Decoupled AI tasks using **Celery & Redis**, reducing user wait time from **4s to under 0.2s**.
-* **🔍 Vector Search (RAG):** Implemented semantic search using **pgvector** to recommend related articles based on context, not just keywords.
-* **🧩 Chrome Extension Integration:** Developed a browser extension with JWT authentication for seamless link saving.
-* **📱 Server-Driven UI:** Utilized **HTMX** for SPA-like interactivity without complex frontend frameworks.
+* ** AI-Powered Summarization:** Automatically summarizes news content using OpenAI API.
+* ** Asynchronous Processing:** Decoupled AI tasks using **Celery & Redis**, reducing user wait time from **4s to under 0.2s**.
+* ** Vector Search (RAG):** Implemented semantic search using **pgvector** to recommend related articles based on context, not just keywords.
+* ** Chrome Extension Integration:** Developed a browser extension with JWT authentication for seamless link saving.
+* ** Server-Driven UI:** Utilized **HTMX** for SPA-like interactivity without complex frontend frameworks.
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 This project adopts a **Micro-service oriented Monolith** architecture to ensure scalability and maintainability.
 
@@ -49,12 +49,12 @@ graph TD
     end
 ```
 
-## 🧱 Infrastructure
+## Infrastructure
 * Containerization: Fully Dockerized environment (Web, Worker, Nginx, DB, Redis) ensuring consistency between Local and Production.
 * Cloud Deployment: Hosted on AWS Lightsail ($7/mo) using Swap memory optimization to handle AI workloads on 1GB RAM.
 * CI/CD: Automated deployment pipeline via GitHub Actions (Planned).
 
-## 💡 Technical Challenges & Solutions
+## Technical Challenges & Solutions
 1. Handling Latency in AI Requests
 * Problem: OpenAI API calls take 3-5 seconds, causing browser timeout and bad UX.
 * Solution: Implemented an Event-Driven Architecture using Celery. The request is acknowledged immediately (200 OK), and the heavy lifting happens in the background. The UI updates in real-time using HTMX polling.
@@ -68,7 +68,7 @@ graph TD
 * Solution: Designed a dual-auth system. Used drf-spectacular for API documentation and configured Django to handle SessionAuthentication for browsers and JWTAuthentication for the extension simultaneously.
 
 
-## 🛠️ How to Run (Local)
+## How to Run (Local)
 Prerequisites: Docker & Docker Compose
 
 1. Clone the repository
@@ -85,7 +85,7 @@ docker-compose up -d --build
 Web: http://localhost:8000
 
 
-## 👨‍💻 Author
+## Author
 Youngho Shin * Backend Developer aspiring to build scalable systems.
 📧 Email: younghoshin2001@gmail.com
 💼 LinkedIn: linkedin.com/in/youngho-shin-dev
