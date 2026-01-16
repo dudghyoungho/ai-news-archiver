@@ -22,11 +22,11 @@
 
 ## Key Features
 
-* ** AI-Powered Summarization:** Automatically summarizes news content using OpenAI API.
-* ** Asynchronous Processing:** Decoupled AI tasks using **Celery & Redis**, reducing user wait time from **4s to under 0.2s**.
-* ** Vector Search (RAG):** Implemented semantic search using **pgvector** to recommend related articles based on context, not just keywords.
-* ** Chrome Extension Integration:** Developed a browser extension with JWT authentication for seamless link saving.
-* ** Server-Driven UI:** Utilized **HTMX** for SPA-like interactivity without complex frontend frameworks.
+*  **AI-Powered Summarization**: Automatically summarizes news content using OpenAI API.
+*  **Asynchronous Processing**: Decoupled AI tasks using **Celery & Redis**, reducing user wait time from **4s to under 0.2s**.
+*  **Vector Search (RAG)**: Implemented semantic search using **pgvector** to recommend related articles based on context, not just keywords.
+*  **Chrome Extension Integration**: Developed a browser extension with JWT authentication for seamless link saving.
+*  **Server-Driven UI**: Utilized **HTMX** for SPA-like interactivity without complex frontend frameworks.
 
 ---
 
