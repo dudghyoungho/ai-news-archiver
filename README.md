@@ -47,7 +47,7 @@ graph TD
         Worker -->|Save Result| DB
         Worker -->|API Call| OpenAI[OpenAI API]
     end
-
+```
 
 ## Infrastructure
 * Containerization: Fully Dockerized environment (Web, Worker, Nginx, DB, Redis) ensuring consistency between Local and Production.
